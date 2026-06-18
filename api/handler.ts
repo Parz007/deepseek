@@ -233,13 +233,40 @@ app.post("/api/subscription/claim", async (req, res) => {
 app.post("/api/telegram/webhook", async (req, res) => {
   res.json({ ok: true });
   const update = req.body;
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
+
+  // ── /start command handler ────────────────────────────────────────────────
+  const msg = update?.message;
+  if (msg?.text?.startsWith("/start")) {
+    const userChatId = msg.chat.id;
+    const firstName = msg.from?.first_name || "there";
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: userChatId,
+        parse_mode: "HTML",
+        text: `👋 <b>Hey ${firstName}!</b>\n\nWelcome to <b>DeepSeek Uncensored</b> — the AI that actually answers your questions.\n\n🧠 Powered by DeepSeek V4\n⚡ Fast, direct, no fluff\n🔓 No restrictions, no refusals\n\n<i>Get 20 free messages to start. Upgrade anytime for unlimited access.</i>`,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🚀 Open DeepSeek Chat", web_app: { url: appUrl } }],
+            [{ text: "💎 Go Premium — Unlimited Access", web_app: { url: `${appUrl}?premium=1` } }],
+          ],
+        },
+      }),
+    });
+    return;
+  }
+
+  // ── Approve / Reject callback handler ────────────────────────────────────
   const callback = update?.callback_query;
   if (!callback) return;
   const data: string = callback.data ?? "";
   const messageId = callback.message?.message_id;
   const chatId = callback.message?.chat?.id;
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) return;
 
   const answerCallback = async (text: string) => {
     await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
