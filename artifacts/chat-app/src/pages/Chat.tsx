@@ -671,6 +671,75 @@ export default function Chat() {
         className="flex-shrink-0 px-4 pt-3 pb-6"
         style={{ background: "hsl(var(--background))", borderTop: "1px solid hsl(var(--border))" }}
       >
+        {/* ── Sticky message count bar (free users only) ── */}
+        {!isPremium && !isLimited && (
+          <div
+            className="mb-3 px-3 py-2 rounded-xl flex items-center gap-2.5"
+            style={{
+              background: msgCount >= 16
+                ? "hsl(35 95% 52% / 0.12)"
+                : "hsl(var(--muted) / 0.5)",
+              border: `1px solid ${msgCount >= 16 ? "hsl(35 95% 52% / 0.35)" : "hsl(var(--border))"}`,
+            }}
+          >
+            {/* Progress bar */}
+            <div className="flex-1 flex flex-col gap-1">
+              <div className="flex items-center justify-between">
+                <span
+                  className="text-[11px] font-semibold"
+                  style={{ color: msgCount >= 16 ? "hsl(35 90% 42%)" : "hsl(var(--muted-foreground))" }}
+                >
+                  {FREE_LIMIT - msgCount} free message{FREE_LIMIT - msgCount === 1 ? "" : "s"} left
+                </span>
+                <span className="text-[10px]" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  {msgCount}/{FREE_LIMIT}
+                </span>
+              </div>
+              <div
+                className="h-1.5 rounded-full overflow-hidden"
+                style={{ background: "hsl(var(--border))" }}
+              >
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${(msgCount / FREE_LIMIT) * 100}%`,
+                    background: msgCount >= 16
+                      ? "linear-gradient(90deg, hsl(35 95% 52%), hsl(10 85% 55%))"
+                      : "linear-gradient(90deg, hsl(252 82% 68%), hsl(198 80% 56%))",
+                    animation: msgCount >= 16 ? "pulse 1.6s ease-in-out infinite" : "none",
+                  }}
+                />
+              </div>
+            </div>
+            {/* Upgrade nudge button */}
+            {msgCount >= 10 && (
+              <button
+                onClick={() => openPremium(false)}
+                className="flex-shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all active:scale-95 whitespace-nowrap"
+                style={{
+                  background: msgCount >= 16
+                    ? "linear-gradient(135deg, hsl(45 90% 50%), hsl(35 95% 55%))"
+                    : "hsl(252 82% 68% / 0.15)",
+                  color: msgCount >= 16 ? "white" : "hsl(252 82% 60%)",
+                  boxShadow: msgCount >= 16 ? "0 2px 8px hsl(45 90% 50% / 0.4)" : "none",
+                }}
+              >
+                Upgrade
+              </button>
+            )}
+          </div>
+        )}
+        {isPending && (
+          <div
+            className="mb-3 px-3 py-2 rounded-xl flex items-center gap-2"
+            style={{ background: "hsl(252 82% 68% / 0.08)", border: "1px solid hsl(252 82% 68% / 0.2)" }}
+          >
+            <Crown size={12} style={{ color: "hsl(252 82% 68%)" }} />
+            <span className="text-[11px] font-medium" style={{ color: "hsl(252 82% 60%)" }}>
+              Approval pending — you'll get unlimited access once confirmed
+            </span>
+          </div>
+        )}
         <div
           className="flex items-end gap-2.5 rounded-2xl px-4 py-3 transition-all"
           style={{
