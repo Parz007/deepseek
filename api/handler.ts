@@ -3,7 +3,7 @@ import cors from "cors";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import { pgTable, serial, text, integer, timestamp } from "drizzle-orm/pg-core";
-import { eq, asc, and, sql } from "drizzle-orm";
+import { eq, asc, desc, and, sql } from "drizzle-orm";
 
 // ── Schema ─────────────────────────────────────────────────────────────────
 const conversationsTable = pgTable("conversations", {
@@ -179,7 +179,59 @@ type AllowedModel = typeof ALLOWED_MODELS[number];
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use((_req, _res, next) => { ensureTables().catch(() => {}).finally(next); }); // ✅ FIXED: moved here, after app is created
+app.use((_req, _res, next) => { ensureTables().catch(() => {}).finally(next); });
+
+// ── Admin route ─────────────────────────────────────────────────────────────
+app.get("/api/admin", async (req, res) => {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret || req.query.key !== secret) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  try {
+    const db = getDb();
+    const subs = await db.select().from(subscriptionsTable).orderBy(desc(subscriptionsTable.createdAt));
+    const msgStats = await db.select({ count: sql<number>`cast(count(*) as int)` }).from(messagesTable);
+    const convStats = await db.select({ count: sql<number>`cast(count(*) as int)` }).from(conversationsTable);
+    res.json({
+      summary: {
+        totalSubscriptions: subs.length,
+        active: subs.filter(s => s.status === "active").length,
+        pending: subs.filter(s => s.status === "pending").length,
+        free: subs.filter(s => s.status === "free").length,
+        rejected: subs.filter(s => s.status === "rejected").length,
+        totalMessages: msgStats[0]?.count ?? 0,
+        totalConversations: convStats[0]?.count ?? 0,
+      },
+      subscriptions: subs.map(s => ({
+        clientId: s.clientId.slice(0, 8) + "…",
+        status: s.status,
+        plan: s.plan,
+        network: s.network,
+        txHash: s.txHash ? s.txHash.slice(0, 16) + "…" : null,
+        expiresAt: s.expiresAt,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      })),
+    });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Admin approve/reject direct ─────────────────────────────────────────────
+app.post("/api/admin/approve", async (req, res) => {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret || req.query.key !== secret) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const { clientId, plan } = req.body;
+  if (!clientId || !plan) { res.status(400).json({ error: "clientId and plan required" }); return; }
+  try {
+    const db = getDb();
+    const expiresAt = plan === "monthly" ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null;
+    await db.update(subscriptionsTable)
+      .set({ status: "active", plan, expiresAt: expiresAt ?? sql`null`, updatedAt: sql`now()` })
+      .where(eq(subscriptionsTable.clientId, clientId));
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
 
 // ── Subscription routes ────────────────────────────────────────────────────
 
@@ -385,8 +437,10 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     await db.insert(messagesTable).values({ conversationId: convId, role: "user", content });
 
-    const history = await db.select({ role: messagesTable.role, content: messagesTable.content })
+    // Keep only last 30 messages to avoid context overflow
+    const allHistory = await db.select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable).where(eq(messagesTable.conversationId, convId)).orderBy(asc(messagesTable.createdAt));
+    const history = allHistory.slice(-30);
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -406,7 +460,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       },
       body: JSON.stringify({
         model: selectedModel,
-        max_tokens: 8192,
+        max_tokens: 32768,
         temperature: 1.0,
         stream: true,
         messages: [
