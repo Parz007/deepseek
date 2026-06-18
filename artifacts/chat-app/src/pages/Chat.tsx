@@ -575,13 +575,6 @@ export default function Chat() {
               <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
                 DeepSeek {MODEL_LABELS[model]} · Powered by OpenRouter
               </p>
-              {!isPremium && (
-                <p className="text-xs mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.7)" }}>
-                  {isLimited
-                    ? <><span style={{ color: "hsl(var(--destructive))" }}>Free limit reached.</span> <button onClick={() => openPremium(true)} style={{ color: "hsl(var(--primary))", textDecoration: "underline" }}>Upgrade to continue</button></>
-                    : `${FREE_LIMIT - msgCount} free questions remaining`}
-                </p>
-              )}
             </div>
           </div>
         )}
@@ -611,31 +604,46 @@ export default function Chat() {
           </div>
         )}
 
+
+        {/* ── Limit reached paywall ── */}
         {isLimited && !isStreaming && (
           <div
-            className="flex flex-col items-center gap-3 py-5 px-4 rounded-2xl mx-auto max-w-sm text-center"
-            style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.2)" }}
+            className="mx-4 mb-2 rounded-2xl overflow-hidden"
+            style={{ border: "1px solid hsl(var(--border))", background: "hsl(var(--card))" }}
           >
-            <Crown size={22} style={{ color: "hsl(45 90% 45%)" }} />
-            <div>
-              <p className="font-semibold text-sm mb-1" style={{ color: "hsl(var(--foreground))" }}>
-                {isPending ? "Payment under review" : "Free limit reached"}
-              </p>
-              <p className="text-xs leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {isPending
-                  ? "Your payment is pending approval. Check back soon."
-                  : "You've used all 20 free questions. Upgrade to continue."}
-              </p>
-            </div>
-            {!isPending && (
-              <button
-                onClick={() => openPremium(true)}
-                className="px-5 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-95"
-                style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 4px 16px hsl(252 82% 68% / 0.4)" }}
+            <div
+              className="px-5 py-4 flex flex-col items-center text-center gap-3"
+            >
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, hsl(252 82% 68% / 0.12), hsl(198 80% 56% / 0.08))", border: "1px solid hsl(252 82% 68% / 0.2)" }}
               >
-                Upgrade — $29/mo or $199 lifetime
-              </button>
-            )}
+                <Sparkles size={18} style={{ color: "hsl(var(--primary))" }} />
+              </div>
+              <div>
+                <p className="font-semibold text-sm mb-1" style={{ color: "hsl(var(--foreground))" }}>
+                  {isPending ? "Payment under review" : "You've used your 20 free messages"}
+                </p>
+                <p className="text-xs leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  {isPending
+                    ? "We're confirming your payment. You'll have unlimited access shortly."
+                    : "Upgrade to Premium for unlimited conversations with DeepSeek."}
+                </p>
+              </div>
+              {!isPending && (
+                <button
+                  onClick={() => openPremium(true)}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.98]"
+                  style={{
+                    background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))",
+                    color: "white",
+                    boxShadow: "0 4px 16px hsl(252 82% 68% / 0.3)",
+                  }}
+                >
+                  Upgrade to Premium
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -647,113 +655,93 @@ export default function Chat() {
         className="flex-shrink-0 px-4 pt-3 pb-6"
         style={{ background: "hsl(var(--background))", borderTop: "1px solid hsl(var(--border))" }}
       >
-        {/* ── Sticky message count bar (free users only) ── */}
-        {!isPremium && !isLimited && (
-          <div
-            className="mb-3 px-3 py-2 rounded-xl flex items-center gap-2.5"
-            style={{
-              background: msgCount >= 16
-                ? "hsl(35 95% 52% / 0.12)"
-                : "hsl(var(--muted) / 0.5)",
-              border: `1px solid ${msgCount >= 16 ? "hsl(35 95% 52% / 0.35)" : "hsl(var(--border))"}`,
-            }}
-          >
-            {/* Progress bar */}
-            <div className="flex-1 flex flex-col gap-1">
-              <div className="flex items-center justify-between">
-                <span
-                  className="text-[11px] font-semibold"
-                  style={{ color: msgCount >= 16 ? "hsl(35 90% 42%)" : "hsl(var(--muted-foreground))" }}
-                >
-                  {FREE_LIMIT - msgCount} free message{FREE_LIMIT - msgCount === 1 ? "" : "s"} left
-                </span>
-                <span className="text-[10px]" style={{ color: "hsl(var(--muted-foreground))" }}>
-                  {msgCount}/{FREE_LIMIT}
-                </span>
-              </div>
-              <div
-                className="h-1.5 rounded-full overflow-hidden"
-                style={{ background: "hsl(var(--border))" }}
-              >
-                <div
-                  className="h-full rounded-full transition-all duration-500"
-                  style={{
-                    width: `${(msgCount / FREE_LIMIT) * 100}%`,
-                    background: msgCount >= 16
-                      ? "linear-gradient(90deg, hsl(35 95% 52%), hsl(10 85% 55%))"
-                      : "linear-gradient(90deg, hsl(252 82% 68%), hsl(198 80% 56%))",
-                    animation: msgCount >= 16 ? "pulse 1.6s ease-in-out infinite" : "none",
-                  }}
-                />
-              </div>
-            </div>
-            {/* Upgrade nudge button */}
-            {msgCount >= 10 && (
-              <button
-                onClick={() => openPremium(false)}
-                className="flex-shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all active:scale-95 whitespace-nowrap"
-                style={{
-                  background: msgCount >= 16
-                    ? "linear-gradient(135deg, hsl(45 90% 50%), hsl(35 95% 55%))"
-                    : "hsl(252 82% 68% / 0.15)",
-                  color: msgCount >= 16 ? "white" : "hsl(252 82% 60%)",
-                  boxShadow: msgCount >= 16 ? "0 2px 8px hsl(45 90% 50% / 0.4)" : "none",
-                }}
-              >
-                Upgrade
-              </button>
-            )}
+        {/* Subtle nudge when approaching limit (last 5 messages) */}
+        {!isPremium && !isLimited && msgCount >= 15 && (
+          <div className="mb-3 flex items-center justify-between px-1">
+            <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground))" }}>
+              {FREE_LIMIT - msgCount} free {FREE_LIMIT - msgCount === 1 ? "message" : "messages"} remaining
+            </span>
+            <button
+              onClick={() => openPremium(false)}
+              className="text-[11px] font-semibold transition-colors"
+              style={{ color: "hsl(var(--primary))" }}
+            >
+              Upgrade →
+            </button>
           </div>
         )}
+
+        {/* Pending payment notice */}
         {isPending && (
           <div
-            className="mb-3 px-3 py-2 rounded-xl flex items-center gap-2"
-            style={{ background: "hsl(252 82% 68% / 0.08)", border: "1px solid hsl(252 82% 68% / 0.2)" }}
+            className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center gap-2"
+            style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}
           >
-            <Crown size={12} style={{ color: "hsl(252 82% 68%)" }} />
             <span className="text-[11px] font-medium" style={{ color: "hsl(252 82% 60%)" }}>
-              Approval pending — you'll get unlimited access once confirmed
+              Payment pending — unlimited access activates once confirmed
             </span>
           </div>
         )}
-        <div
-          className="flex items-end gap-2.5 rounded-2xl px-4 py-3 transition-all"
-          style={{
-            background: "hsl(var(--card))",
-            border: `1px solid ${isLimited ? "hsl(var(--destructive) / 0.3)" : "hsl(var(--card-border))"}`,
-            opacity: isLimited ? 0.8 : 1,
-          }}
-          onFocusCapture={e => { if (!isLimited) e.currentTarget.style.borderColor = "hsl(252 82% 68% / 0.4)"; }}
-          onBlurCapture={e => { if (!isLimited) e.currentTarget.style.borderColor = isLimited ? "hsl(var(--destructive) / 0.3)" : "hsl(var(--card-border))"; }}
-        >
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); isLimited ? openPremium(true) : handleSend(); } }}
-            disabled={isStreaming}
-            placeholder={isLimited ? "Upgrade to send more messages…" : "Message DeepSeek…"}
-            rows={1}
-            className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
-            style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
-          />
-          <button
-            onClick={isLimited ? () => openPremium(true) : handleSend}
-            disabled={!isLimited && !canSend}
-            className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-            style={{
-              background: isLimited
-                ? "linear-gradient(135deg, hsl(45 90% 50%), hsl(35 95% 55%))"
-                : canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
-              color: (isLimited || canSend) ? "white" : "hsl(var(--muted-foreground))",
-              boxShadow: isLimited ? "0 3px 12px hsl(45 90% 50% / 0.45)" : canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
-            }}
+
+        {isLimited ? (
+          /* Locked input state */
+          <div
+            className="flex items-center justify-between gap-3 rounded-2xl px-4 py-3"
+            style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}
           >
-            {isLimited ? <Crown size={15} /> : <Send size={15} strokeWidth={2} />}
-          </button>
-        </div>
+            <span className="text-sm flex-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+              Upgrade to send more messages
+            </span>
+            <button
+              onClick={() => openPremium(true)}
+              className="flex-shrink-0 px-4 py-2 rounded-xl text-xs font-semibold transition-all active:scale-95"
+              style={{
+                background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))",
+                color: "white",
+                boxShadow: "0 3px 10px hsl(252 82% 68% / 0.35)",
+              }}
+            >
+              Upgrade
+            </button>
+          </div>
+        ) : (
+          <div
+            className="flex items-end gap-2.5 rounded-2xl px-4 py-3 transition-all"
+            style={{
+              background: "hsl(var(--card))",
+              border: "1px solid hsl(var(--card-border))",
+            }}
+            onFocusCapture={e => { e.currentTarget.style.borderColor = "hsl(252 82% 68% / 0.4)"; }}
+            onBlurCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--card-border))"; }}
+          >
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              disabled={isStreaming}
+              placeholder="Message DeepSeek…"
+              rows={1}
+              className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
+              style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={!canSend}
+              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+              style={{
+                background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
+                color: canSend ? "white" : "hsl(var(--muted-foreground))",
+                boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
+              }}
+            >
+              <Send size={15} strokeWidth={2} />
+            </button>
+          </div>
+        )}
+
         <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
-          {isLimited ? "Free limit reached · Upgrade for unlimited access" : "Enter to send · Shift+Enter for new line"}
+          {isLimited ? "Unlimited access from $29/mo" : "Enter to send · Shift+Enter for new line"}
         </p>
       </footer>
 
