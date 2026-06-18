@@ -78,8 +78,6 @@ async function ensureTables() {
   _migrated = true;
 }
 
-app.use((_req, _res, next) => { ensureTables().catch(() => {}).finally(next); });
-
 // ── Constants ──────────────────────────────────────────────────────────────
 const FREE_LIMIT = 20;
 const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
@@ -181,6 +179,7 @@ type AllowedModel = typeof ALLOWED_MODELS[number];
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use((_req, _res, next) => { ensureTables().catch(() => {}).finally(next); }); // ✅ FIXED: moved here, after app is created
 
 // ── Subscription routes ────────────────────────────────────────────────────
 
@@ -342,7 +341,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   try {
     const db = getDb();
 
-    // Subscription / limit check
     if (clientId) {
       const sub = await getOrCreateSubscription(db, clientId);
       const isActive = sub.status === "active" && (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
