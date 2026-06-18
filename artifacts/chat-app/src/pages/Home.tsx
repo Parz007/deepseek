@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useListConversations, useDeleteConversation, getListConversationsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { MessageSquare, Plus, Settings, Trash2, Sparkles, ChevronRight, Sun, Moon } from "lucide-react";
 import { useAppContext } from "@/contexts/AppContext";
+import PremiumModal from "@/components/PremiumModal";
 
 function formatDate(iso: string) {
   const d = new Date(iso);
@@ -15,6 +16,25 @@ function formatDate(iso: string) {
   if (diffDays < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
+
+function getClientId(): string {
+  let id = localStorage.getItem("clientId");
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("clientId", id);
+  }
+  return id;
+}
+
+interface SubStatus {
+  status: string;
+  plan: string | null;
+  messageCount: number;
+  limit: number;
+  isActive: boolean;
+}
+
+const FREE_LIMIT = 20;
 
 const AVATAR_COLORS = [
   ["252 82% 68%", "198 80% 56%"],
@@ -36,6 +56,35 @@ export default function Home() {
   });
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [showPremium, setShowPremium] = useState(false);
+  const [claimSubmitted, setClaimSubmitted] = useState(false);
+  const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
+
+  const clientId = getClientId();
+  const apiBase = import.meta.env.VITE_API_URL || "";
+
+  const fetchSubStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/subscription/status`, {
+        headers: { "X-Client-ID": clientId },
+      });
+      if (res.ok) {
+        const data = await res.json() as SubStatus;
+        setSubStatus(data);
+        if (data.status === "pending") setClaimSubmitted(true);
+      }
+    } catch { /* ignore */ }
+  }, [clientId, apiBase]);
+
+  useEffect(() => {
+    fetchSubStatus();
+  }, [fetchSubStatus]);
+
+  const isPremium = subStatus?.isActive ?? false;
+  const isPending = subStatus?.status === "pending";
+  const msgCount = subStatus?.messageCount ?? 0;
+  const isLimited = subStatus !== null && !subStatus.isActive && msgCount >= FREE_LIMIT;
+  const isApproaching = !isPremium && !isLimited && msgCount >= 15;
 
   const handleDeleteClick = (e: React.MouseEvent, id: number) => {
     e.preventDefault();
@@ -102,6 +151,47 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Subtle plan badge */}
+            {!isPremium && subStatus !== null && (
+              <button
+                onClick={() => setShowPremium(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold transition-all active:scale-95"
+                style={{
+                  background: isLimited
+                    ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))"
+                    : "hsl(var(--card))",
+                  border: isLimited
+                    ? "none"
+                    : `1px solid ${isApproaching ? "hsl(252 82% 68% / 0.4)" : "hsl(var(--border))"}`,
+                  color: isLimited
+                    ? "white"
+                    : isApproaching
+                    ? "hsl(252 82% 60%)"
+                    : "hsl(var(--muted-foreground))",
+                  boxShadow: isLimited ? "0 3px 10px hsl(252 82% 68% / 0.3)" : "none",
+                }}
+              >
+                {isPending
+                  ? "Pending"
+                  : isLimited
+                  ? "Upgrade"
+                  : isApproaching
+                  ? `${FREE_LIMIT - msgCount} left`
+                  : "Free"}
+              </button>
+            )}
+            {isPremium && (
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold"
+                style={{
+                  background: "hsl(142 62% 52% / 0.1)",
+                  border: "1px solid hsl(142 62% 52% / 0.25)",
+                  color: "hsl(142 62% 42%)",
+                }}
+              >
+                Premium
+              </div>
+            )}
             <button
               onClick={toggleTheme}
               className="w-9 h-9 rounded-xl flex items-center justify-center transition-all active:scale-90"
@@ -144,6 +234,20 @@ export default function Home() {
           </div>
           Start New Chat
         </button>
+
+        {/* Limit reached notice under the CTA */}
+        {isLimited && (
+          <p className="text-center text-xs mt-3" style={{ color: "hsl(var(--muted-foreground))" }}>
+            You've used all 20 free messages.{" "}
+            <button
+              onClick={() => setShowPremium(true)}
+              className="font-semibold"
+              style={{ color: "hsl(var(--primary))" }}
+            >
+              Upgrade to continue →
+            </button>
+          </p>
+        )}
       </div>
 
       {/* ── List ── */}
@@ -211,7 +315,6 @@ export default function Home() {
                       </div>
 
                       {isConfirming ? (
-                        /* ── Confirm delete state ── */
                         <div className="flex-1 flex items-center justify-between min-w-0 gap-2">
                           <p className="text-sm font-medium" style={{ color: "hsl(var(--destructive))" }}>
                             Delete this chat?
@@ -235,7 +338,6 @@ export default function Home() {
                           </div>
                         </div>
                       ) : (
-                        /* ── Normal state ── */
                         <>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
@@ -246,7 +348,6 @@ export default function Home() {
                             </p>
                           </div>
                           <div className="flex items-center gap-1 flex-shrink-0">
-                            {/* Delete button — always visible on mobile */}
                             <button
                               onClick={(e) => handleDeleteClick(e, conv.id)}
                               disabled={isDeleting}
@@ -284,6 +385,15 @@ export default function Home() {
         )}
       </main>
 
+      {showPremium && (
+        <PremiumModal
+          clientId={clientId}
+          onClose={() => { setShowPremium(false); fetchSubStatus(); }}
+          onClaimSubmitted={() => { setClaimSubmitted(true); fetchSubStatus(); }}
+          claimStatus={claimSubmitted || isPending ? "pending" : "idle"}
+          triggeredByLimit={isLimited}
+        />
+      )}
     </div>
   );
 }
