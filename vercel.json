@@ -4,16 +4,16 @@
   "buildCommand": "NODE_ENV=production BASE_PATH=/ PORT=3000 pnpm --filter @workspace/chat-app run build",
   "outputDirectory": "artifacts/chat-app/dist/public",
   "framework": null,
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/handler" },
-    { "src": "/(.*)", "dest": "/index.html" }
-  ],
   "functions": {
     "api/handler.ts": {
       "maxDuration": 60,
       "memory": 1024
     }
   },
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/handler" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ],
   "headers": [
     {
       "source": "/api/(.*)",
