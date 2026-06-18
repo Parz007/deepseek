@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "installCommand": "pnpm install",
+  "installCommand": "pnpm install --ignore-workspace",
   "buildCommand": "NODE_ENV=production BASE_PATH=/ PORT=3000 pnpm --filter @workspace/chat-app run build && mkdir -p public && cp -r /vercel/path0/artifacts/chat-app/dist/public/. public/",
   "outputDirectory": "public",
   "framework": null,
