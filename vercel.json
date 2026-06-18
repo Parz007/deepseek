@@ -1,7 +1,7 @@
 {
   "version": 2,
   "installCommand": "pnpm install",
-  "buildCommand": "BASE_PATH=/ PORT=3000 pnpm --filter @workspace/chat-app run build",
+  "buildCommand": "NODE_ENV=production BASE_PATH=/ PORT=3000 pnpm --filter @workspace/chat-app run build",
   "outputDirectory": "artifacts/chat-app/dist/public",
   "functions": {
     "api/handler.ts": {
