@@ -510,26 +510,27 @@ export default function Chat() {
         </div>
 
         {isPremium ? (
-          <div className="flex items-center gap-1 px-2 py-1 rounded-xl flex-shrink-0"
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl flex-shrink-0"
             style={{ background: "hsl(45 90% 50% / 0.15)", border: "1px solid hsl(45 90% 50% / 0.3)" }}>
-            <Crown size={11} style={{ color: "hsl(45 90% 45%)" }} />
-            <span className="text-[10px] font-bold" style={{ color: "hsl(45 90% 40%)" }}>
+            <Crown size={12} style={{ color: "hsl(45 90% 45%)" }} />
+            <span className="text-[11px] font-bold" style={{ color: "hsl(45 90% 40%)" }}>
               {subStatus?.plan === "lifetime" ? "Lifetime" : "Pro"}
             </span>
           </div>
         ) : (
           <button
-            onClick={() => openPremium(false)}
-            className="flex items-center gap-1 px-2 py-1 rounded-xl flex-shrink-0 transition-all active:scale-95"
+            onClick={() => openPremium(isLimited)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl flex-shrink-0 font-bold text-xs transition-all active:scale-95"
             style={{
-              background: isLimited ? "hsl(var(--destructive) / 0.1)" : "hsl(var(--muted))",
-              border: `1px solid ${isLimited ? "hsl(var(--destructive) / 0.4)" : "hsl(var(--border))"}`,
+              background: isPending
+                ? "hsl(var(--muted))"
+                : "linear-gradient(135deg, hsl(45 90% 50%), hsl(35 95% 55%))",
+              color: isPending ? "hsl(var(--muted-foreground))" : "white",
+              boxShadow: isPending ? "none" : "0 2px 10px hsl(45 90% 50% / 0.4)",
             }}
           >
-            <Crown size={11} style={{ color: isLimited ? "hsl(var(--destructive))" : "hsl(45 90% 45%)" }} />
-            <span className="text-[10px] font-semibold" style={{ color: isLimited ? "hsl(var(--destructive))" : "hsl(var(--muted-foreground))" }}>
-              {isPending ? "Pending…" : isLimited ? "Upgrade" : `${msgCount}/${FREE_LIMIT}`}
-            </span>
+            <Crown size={12} />
+            {isPending ? "Pending…" : "Join Premium"}
           </button>
         )}
 
