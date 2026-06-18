@@ -11,16 +11,7 @@
     }
   },
   "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/handler",
-      "headers": {
-        "Cache-Control": "no-store",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-Client-ID"
-      }
-    },
+    { "src": "/api/(.*)", "dest": "/api/handler" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
