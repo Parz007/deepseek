@@ -305,7 +305,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
         reply_markup: {
           inline_keyboard: [
             [{ text: "🚀 Open DeepSeek Chat", web_app: { url: appUrl } }],
-            [{ text: "💎 Go Premium — Unlimited Access", web_app: { url: `${appUrl}?premium=1` } }],
           ],
         },
       }),
