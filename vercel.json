@@ -1,7 +1,7 @@
 {
   "version": 2,
   "installCommand": "pnpm install",
-  "buildCommand": "NODE_ENV=production BASE_PATH=/ PORT=3000 pnpm --filter @workspace/chat-app run build && cp -r artifacts/chat-app/dist/public public",
+  "buildCommand": "NODE_ENV=production BASE_PATH=/ PORT=3000 pnpm --filter @workspace/chat-app run build && mkdir -p public && cp -r artifacts/chat-app/dist/public/. public/",
   "outputDirectory": "public",
   "framework": null,
   "functions": {
