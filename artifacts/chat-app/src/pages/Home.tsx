@@ -2,9 +2,8 @@ import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useListConversations, useDeleteConversation, getListConversationsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Plus, Settings, Trash2, Sparkles, ChevronRight, Sun, Moon, Crown } from "lucide-react";
+import { MessageSquare, Plus, Settings, Trash2, Sparkles, ChevronRight, Sun, Moon } from "lucide-react";
 import { useAppContext } from "@/contexts/AppContext";
-import PremiumModal from "@/components/PremiumModal";
 
 function formatDate(iso: string) {
   const d = new Date(iso);
@@ -37,13 +36,6 @@ export default function Home() {
   });
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
-  const [showPremium, setShowPremium] = useState(false);
-
-  const clientId = (() => {
-    let id = localStorage.getItem("clientId");
-    if (!id) { id = crypto.randomUUID(); localStorage.setItem("clientId", id); }
-    return id;
-  })();
 
   const handleDeleteClick = (e: React.MouseEvent, id: number) => {
     e.preventDefault();
@@ -107,19 +99,6 @@ export default function Home() {
                 Research Sandbox
               </p>
             </div>
-            {/* ── JOIN PREMIUM button — top left, always visible ── */}
-            <button
-              onClick={() => setShowPremium(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold text-xs transition-all active:scale-95 flex-shrink-0"
-              style={{
-                background: "linear-gradient(135deg, hsl(45 90% 50%), hsl(35 95% 55%))",
-                color: "white",
-                boxShadow: "0 3px 14px hsl(45 90% 50% / 0.45)",
-              }}
-            >
-              <Crown size={12} />
-              Join Premium
-            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -305,15 +284,6 @@ export default function Home() {
         )}
       </main>
 
-      {/* Premium modal */}
-      {showPremium && (
-        <PremiumModal
-          clientId={clientId}
-          onClose={() => setShowPremium(false)}
-          onClaimSubmitted={() => {}}
-          claimStatus="idle"
-        />
-      )}
     </div>
   );
 }
