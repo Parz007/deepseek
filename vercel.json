@@ -3,6 +3,7 @@
   "installCommand": "pnpm install",
   "buildCommand": "NODE_ENV=production BASE_PATH=/ PORT=3000 pnpm --filter @workspace/chat-app run build",
   "outputDirectory": "artifacts/chat-app/dist/public",
+  "framework": null,
   "functions": {
     "api/handler.ts": {
       "maxDuration": 60,
