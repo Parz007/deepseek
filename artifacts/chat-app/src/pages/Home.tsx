@@ -35,14 +35,27 @@ export default function Home() {
     },
   });
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [pressedId, setPressedId] = useState<number | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
-  const handleDelete = async (e: React.MouseEvent, id: number) => {
+  const handleDeleteClick = (e: React.MouseEvent, id: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setConfirmDeleteId(id);
+  };
+
+  const handleConfirmDelete = async (e: React.MouseEvent, id: number) => {
     e.preventDefault();
     e.stopPropagation();
     setDeletingId(id);
+    setConfirmDeleteId(null);
     try { await deleteConversation.mutateAsync({ id }); }
     finally { setDeletingId(null); }
+  };
+
+  const handleCancelDelete = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setConfirmDeleteId(null);
   };
 
   return (
@@ -89,7 +102,6 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Dark/light toggle */}
             <button
               onClick={toggleTheme}
               className="w-9 h-9 rounded-xl flex items-center justify-center transition-all active:scale-90"
@@ -174,19 +186,18 @@ export default function Home() {
               {conversations.map((conv, i) => {
                 const colors = AVATAR_COLORS[i % AVATAR_COLORS.length];
                 const initials = conv.title.slice(0, 2).toUpperCase();
+                const isConfirming = confirmDeleteId === conv.id;
+                const isDeleting = deletingId === conv.id;
+
                 return (
-                  <Link key={conv.id} href={`/chat/${conv.id}`}>
+                  <Link key={conv.id} href={isConfirming ? "#" : `/chat/${conv.id}`}>
                     <div
-                      className="group relative flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all active:scale-[0.98]"
+                      className="relative flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all active:scale-[0.98]"
                       style={{
-                        background: pressedId === conv.id ? "hsl(var(--card))" : "hsl(var(--card))",
-                        border: "1px solid hsl(var(--card-border))",
+                        background: "hsl(var(--card))",
+                        border: `1px solid ${isConfirming ? "hsl(var(--destructive) / 0.4)" : "hsl(var(--card-border))"}`,
                         boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
                       }}
-                      onMouseEnter={e => (e.currentTarget.style.borderColor = "hsl(252 82% 68% / 0.3)")}
-                      onMouseLeave={e => (e.currentTarget.style.borderColor = "hsl(var(--card-border))")}
-                      onTouchStart={() => setPressedId(conv.id)}
-                      onTouchEnd={() => setPressedId(null)}
                     >
                       <div
                         className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 text-xs font-bold text-white"
@@ -198,33 +209,68 @@ export default function Home() {
                       >
                         {initials}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
-                          {conv.title}
-                        </p>
-                        <p className="text-xs mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                          {formatDate(conv.createdAt)}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <button
-                          onClick={(e) => handleDelete(e, conv.id)}
-                          disabled={deletingId === conv.id}
-                          className="w-8 h-8 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
-                          style={{ color: "hsl(var(--muted-foreground))" }}
-                          onMouseEnter={e => {
-                            (e.currentTarget as HTMLElement).style.color = "hsl(var(--destructive))";
-                            (e.currentTarget as HTMLElement).style.background = "hsl(var(--destructive) / 0.1)";
-                          }}
-                          onMouseLeave={e => {
-                            (e.currentTarget as HTMLElement).style.color = "hsl(var(--muted-foreground))";
-                            (e.currentTarget as HTMLElement).style.background = "transparent";
-                          }}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                        <ChevronRight size={15} style={{ color: "hsl(var(--muted-foreground))" }} />
-                      </div>
+
+                      {isConfirming ? (
+                        /* ── Confirm delete state ── */
+                        <div className="flex-1 flex items-center justify-between min-w-0 gap-2">
+                          <p className="text-sm font-medium" style={{ color: "hsl(var(--destructive))" }}>
+                            Delete this chat?
+                          </p>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button
+                              onClick={(e) => handleConfirmDelete(e, conv.id)}
+                              disabled={isDeleting}
+                              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95"
+                              style={{ background: "hsl(var(--destructive))", color: "white" }}
+                            >
+                              {isDeleting ? "…" : "Delete"}
+                            </button>
+                            <button
+                              onClick={handleCancelDelete}
+                              className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95"
+                              style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* ── Normal state ── */
+                        <>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
+                              {conv.title}
+                            </p>
+                            <p className="text-xs mt-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+                              {formatDate(conv.createdAt)}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            {/* Delete button — always visible on mobile */}
+                            <button
+                              onClick={(e) => handleDeleteClick(e, conv.id)}
+                              disabled={isDeleting}
+                              className="w-8 h-8 rounded-lg flex items-center justify-center transition-all active:scale-90"
+                              style={{
+                                color: "hsl(var(--muted-foreground))",
+                                background: "transparent",
+                              }}
+                              onMouseEnter={e => {
+                                (e.currentTarget as HTMLElement).style.color = "hsl(var(--destructive))";
+                                (e.currentTarget as HTMLElement).style.background = "hsl(var(--destructive) / 0.1)";
+                              }}
+                              onMouseLeave={e => {
+                                (e.currentTarget as HTMLElement).style.color = "hsl(var(--muted-foreground))";
+                                (e.currentTarget as HTMLElement).style.background = "transparent";
+                              }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                            <ChevronRight size={15} style={{ color: "hsl(var(--muted-foreground))" }} />
+                          </div>
+                        </>
+                      )}
+
                       <div
                         className="absolute left-0 top-3 bottom-3 w-0.5 rounded-full"
                         style={{ background: `linear-gradient(to bottom, hsl(${colors[0]}), hsl(${colors[1]}))` }}
