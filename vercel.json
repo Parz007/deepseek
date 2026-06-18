@@ -10,17 +10,18 @@
       "memory": 1024
     }
   },
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/handler" },
-    { "source": "/((?!api).*)", "destination": "/index.html" }
-  ],
-  "headers": [
+  "routes": [
     {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "no-store" },
-        { "key": "Access-Control-Allow-Origin", "value": "*" }
-      ]
-    }
+      "src": "/api/(.*)",
+      "dest": "/api/handler",
+      "headers": {
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Client-ID"
+      }
+    },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
