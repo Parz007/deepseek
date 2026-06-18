@@ -41,6 +41,45 @@ function getDb() {
   return drizzle(pool);
 }
 
+// ── Auto-migration ──────────────────────────────────────────────────────────
+let _migrated = false;
+async function ensureTables() {
+  if (_migrated) return;
+  const url = process.env.DATABASE_URL;
+  if (!url) return;
+  const pool = new pg.Pool({ connectionString: url });
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      client_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id SERIAL PRIMARY KEY,
+      conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id SERIAL PRIMARY KEY,
+      client_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'free',
+      plan TEXT,
+      tx_hash TEXT,
+      network TEXT,
+      expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await pool.end();
+  _migrated = true;
+}
+
+app.use((_req, _res, next) => { ensureTables().catch(() => {}).finally(next); });
+
 // ── Constants ──────────────────────────────────────────────────────────────
 const FREE_LIMIT = 20;
 const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
