@@ -5,6 +5,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check, Crown } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
 
 interface StreamMessage {
   id: string;
@@ -35,6 +38,252 @@ function getClientId(): string {
     localStorage.setItem("clientId", id);
   }
   return id;
+}
+
+// ── Code block with copy button ───────────────────────────────────────────
+function CodeBlock({ lang, code }: { lang: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+  return (
+    <div
+      className="relative my-3 rounded-xl overflow-hidden text-sm"
+      style={{ background: "hsl(230 20% 5%)", border: "1px solid hsl(230 14% 18%)" }}
+    >
+      {/* Header bar */}
+      <div
+        className="flex items-center justify-between px-4 py-2"
+        style={{ background: "hsl(230 18% 8%)", borderBottom: "1px solid hsl(230 14% 15%)" }}
+      >
+        <span
+          className="text-[11px] font-semibold uppercase tracking-wider"
+          style={{ color: "hsl(220 10% 45%)" }}
+        >
+          {lang || "code"}
+        </span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium transition-all active:scale-90"
+          style={{
+            background: copied ? "hsl(142 62% 52% / 0.15)" : "hsl(230 14% 14%)",
+            border: `1px solid ${copied ? "hsl(142 62% 52% / 0.3)" : "hsl(230 14% 20%)"}`,
+            color: copied ? "hsl(142 62% 50%)" : "hsl(220 10% 55%)",
+          }}
+        >
+          {copied ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} />}
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      {/* Code content */}
+      <pre
+        className="overflow-x-auto px-4 py-3 text-[13px] leading-relaxed"
+        style={{ margin: 0, color: "hsl(220 18% 82%)", fontFamily: "var(--app-font-mono)" }}
+      >
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+// ── Markdown renderer components ──────────────────────────────────────────
+function buildMarkdownComponents(textColor: string): Components {
+  return {
+    // Code: inline vs block
+    code({ className, children, ...props }) {
+      const isInline = !className;
+      const lang = (className || "").replace("language-", "");
+      const code = String(children).replace(/\n$/, "");
+      if (!isInline) {
+        return <CodeBlock lang={lang} code={code} />;
+      }
+      return (
+        <code
+          style={{
+            background: "hsl(230 18% 13%)",
+            color: "hsl(198 80% 70%)",
+            padding: "1px 5px",
+            borderRadius: "4px",
+            fontFamily: "var(--app-font-mono)",
+            fontSize: "0.85em",
+            border: "1px solid hsl(230 14% 20%)",
+          }}
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    },
+
+    // Headings
+    h1({ children }) {
+      return (
+        <h1 style={{ color: textColor, fontSize: "1.2em", fontWeight: 700, margin: "1em 0 0.4em", borderBottom: "1px solid hsl(var(--border))", paddingBottom: "0.3em" }}>
+          {children}
+        </h1>
+      );
+    },
+    h2({ children }) {
+      return (
+        <h2 style={{ color: textColor, fontSize: "1.1em", fontWeight: 600, margin: "0.9em 0 0.35em" }}>
+          {children}
+        </h2>
+      );
+    },
+    h3({ children }) {
+      return (
+        <h3 style={{ color: textColor, fontSize: "1em", fontWeight: 600, margin: "0.8em 0 0.3em" }}>
+          {children}
+        </h3>
+      );
+    },
+
+    // Paragraph
+    p({ children }) {
+      return (
+        <p style={{ margin: "0.5em 0", lineHeight: 1.7, color: textColor }}>
+          {children}
+        </p>
+      );
+    },
+
+    // Lists
+    ul({ children }) {
+      return (
+        <ul style={{ margin: "0.5em 0", paddingLeft: "1.4em", color: textColor, display: "flex", flexDirection: "column", gap: "0.2em" }}>
+          {children}
+        </ul>
+      );
+    },
+    ol({ children }) {
+      return (
+        <ol style={{ margin: "0.5em 0", paddingLeft: "1.4em", color: textColor, display: "flex", flexDirection: "column", gap: "0.2em" }}>
+          {children}
+        </ol>
+      );
+    },
+    li({ children }) {
+      return (
+        <li style={{ color: textColor, lineHeight: 1.65 }}>
+          {children}
+        </li>
+      );
+    },
+
+    // Bold / italic
+    strong({ children }) {
+      return <strong style={{ color: textColor, fontWeight: 700 }}>{children}</strong>;
+    },
+    em({ children }) {
+      return <em style={{ color: textColor, fontStyle: "italic" }}>{children}</em>;
+    },
+
+    // Blockquote
+    blockquote({ children }) {
+      return (
+        <blockquote
+          style={{
+            margin: "0.6em 0",
+            paddingLeft: "0.9em",
+            borderLeft: "3px solid hsl(252 82% 68% / 0.5)",
+            color: "hsl(var(--muted-foreground))",
+            fontStyle: "italic",
+          }}
+        >
+          {children}
+        </blockquote>
+      );
+    },
+
+    // Horizontal rule
+    hr() {
+      return <hr style={{ border: "none", borderTop: "1px solid hsl(var(--border))", margin: "0.8em 0" }} />;
+    },
+
+    // Table
+    table({ children }) {
+      return (
+        <div style={{ overflowX: "auto", margin: "0.6em 0" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "0.88em" }}>
+            {children}
+          </table>
+        </div>
+      );
+    },
+    thead({ children }) {
+      return <thead style={{ background: "hsl(var(--muted))" }}>{children}</thead>;
+    },
+    th({ children }) {
+      return (
+        <th
+          style={{
+            padding: "6px 10px",
+            textAlign: "left",
+            fontWeight: 600,
+            color: textColor,
+            border: "1px solid hsl(var(--border))",
+            fontSize: "0.85em",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {children}
+        </th>
+      );
+    },
+    td({ children }) {
+      return (
+        <td
+          style={{
+            padding: "5px 10px",
+            color: textColor,
+            border: "1px solid hsl(var(--border))",
+            verticalAlign: "top",
+          }}
+        >
+          {children}
+        </td>
+      );
+    },
+    tr({ children }) {
+      return <tr>{children}</tr>;
+    },
+
+    // Links
+    a({ href, children }) {
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "hsl(var(--primary))", textDecoration: "underline", textUnderlineOffset: "2px" }}
+        >
+          {children}
+        </a>
+      );
+    },
+  };
+}
+
+// ── Markdown message renderer ─────────────────────────────────────────────
+function MarkdownContent({ content, streaming }: { content: string; streaming?: boolean }) {
+  const textColor = "hsl(var(--foreground))";
+  const components = buildMarkdownComponents(textColor);
+
+  return (
+    <div style={{ fontSize: "0.875rem", lineHeight: 1.65 }}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {content}
+      </ReactMarkdown>
+      {streaming && (
+        <span
+          className="inline-block w-0.5 h-3.5 ml-0.5 align-middle rounded-full animate-pulse"
+          style={{ background: "hsl(var(--primary))" }}
+        />
+      )}
+    </div>
+  );
 }
 
 export default function Chat() {
@@ -80,10 +329,9 @@ export default function Chat() {
     } catch { /* ignore */ }
   }, [clientId, apiBase]);
 
-  // Auto-open premium modal if URL has ?premium=1 (from Telegram button)
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("premium") === "1") {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("premium") === "1") {
       setShowPremium(true);
       setPremiumTriggeredByLimit(false);
     }
@@ -150,10 +398,7 @@ export default function Chat() {
       abortRef.current = new AbortController();
       const res = await fetch(`${apiBase}/api/conversations/${targetId}/messages`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": clientId,
-        },
+        headers: { "Content-Type": "application/json", "X-Client-ID": clientId },
         body: JSON.stringify({ content: userMessage, model }),
         signal: abortRef.current.signal,
       });
@@ -199,9 +444,7 @@ export default function Chat() {
         { id: Date.now().toString(), role: "user", content: userMessage },
         { id: (Date.now() + 1).toString(), role: "assistant", content: full },
       ]);
-
       fetchSubStatus();
-
       if (isNew && targetId) navigate(`/chat/${targetId}`, { replace: true });
     } catch (e: any) {
       if (e.name !== "AbortError") {
@@ -241,10 +484,7 @@ export default function Chat() {
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div
             className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{
-              background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))",
-              boxShadow: "0 3px 12px hsl(252 82% 68% / 0.35)",
-            }}
+            style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))", boxShadow: "0 3px 12px hsl(252 82% 68% / 0.35)" }}
           >
             <Sparkles size={15} className="text-white" />
           </div>
@@ -269,7 +509,6 @@ export default function Chat() {
           </div>
         </div>
 
-        {/* Premium / usage indicator */}
         {isPremium ? (
           <div className="flex items-center gap-1 px-2 py-1 rounded-xl flex-shrink-0"
             style={{ background: "hsl(45 90% 50% / 0.15)", border: "1px solid hsl(45 90% 50% / 0.3)" }}>
@@ -299,24 +538,15 @@ export default function Chat() {
           <button
             onClick={e => { e.stopPropagation(); setShowModelMenu(v => !v); }}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
-            style={{
-              background: "hsl(var(--card))",
-              border: "1px solid hsl(var(--border))",
-              color: "hsl(var(--foreground))",
-            }}
+            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}
           >
             {MODEL_LABELS[model]}
             <ChevronDown size={12} style={{ color: "hsl(var(--muted-foreground))" }} />
           </button>
-
           {showModelMenu && (
             <div
               className="absolute right-0 top-full mt-1.5 z-50 min-w-[160px] rounded-xl overflow-hidden"
-              style={{
-                background: "hsl(var(--card))",
-                border: "1px solid hsl(var(--border))",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
-              }}
+              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
               onClick={e => e.stopPropagation()}
             >
               {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] as Model[]).map(m => (
@@ -357,10 +587,7 @@ export default function Chat() {
           <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-4 pb-8">
             <div
               className="relative w-16 h-16 rounded-3xl flex items-center justify-center"
-              style={{
-                background: "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
-                border: "1px solid hsl(252 82% 68% / 0.25)",
-              }}
+              style={{ background: "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))", border: "1px solid hsl(252 82% 68% / 0.25)" }}
             >
               <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />
             </div>
@@ -407,7 +634,6 @@ export default function Chat() {
           </div>
         )}
 
-        {/* Limit reached banner */}
         {isLimited && !isStreaming && (
           <div
             className="flex flex-col items-center gap-3 py-5 px-4 rounded-2xl mx-auto max-w-sm text-center"
@@ -485,7 +711,6 @@ export default function Chat() {
         </p>
       </footer>
 
-      {/* Premium modal */}
       {showPremium && (
         <PremiumModal
           clientId={clientId}
@@ -502,10 +727,7 @@ export default function Chat() {
 function AIAvatar() {
   return (
     <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-      style={{
-        background: "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))",
-        border: "1px solid hsl(252 82% 68% / 0.2)",
-      }}>
+      style={{ background: "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))", border: "1px solid hsl(252 82% 68% / 0.2)" }}>
       <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />
     </div>
   );
@@ -547,7 +769,6 @@ function MessageBubble({ role, content, streaming, error }: {
   if (role === "user") {
     return (
       <div className="flex flex-col items-end gap-1">
-        {/* Copy always visible */}
         <div className="pr-1">
           <CopyButton text={content} />
         </div>
@@ -567,29 +788,43 @@ function MessageBubble({ role, content, streaming, error }: {
     );
   }
 
+  // Error message — plain text, no markdown
+  if (error) {
+    return (
+      <div className="flex items-end gap-2.5">
+        <AIAvatar />
+        <div className="flex flex-col gap-1 max-w-[85%]">
+          <div
+            className="px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
+            style={{
+              background: "hsl(var(--destructive) / 0.08)",
+              border: "1px solid hsl(var(--destructive) / 0.25)",
+              color: "hsl(var(--destructive))",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {content}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // AI message — markdown rendered
   return (
-    <div className="flex items-end gap-2.5">
+    <div className="flex items-start gap-2.5">
       <AIAvatar />
-      <div className="flex flex-col gap-1 max-w-[80%]">
+      <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
         <div
-          className="px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
+          className="px-4 py-3 rounded-2xl rounded-bl-md"
           style={{
-            background: error ? "hsl(var(--destructive) / 0.08)" : "hsl(var(--card))",
-            border: `1px solid ${error ? "hsl(var(--destructive) / 0.25)" : "hsl(var(--card-border, var(--border)))"}`,
-            color: error ? "hsl(var(--destructive))" : "hsl(var(--foreground))",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
+            background: "hsl(var(--card))",
+            border: "1px solid hsl(var(--card-border, var(--border)))",
           }}
         >
-          {content}
-          {streaming && (
-            <span
-              className="inline-block w-0.5 h-3.5 ml-0.5 align-middle rounded-full animate-pulse"
-              style={{ background: "hsl(var(--primary))" }}
-            />
-          )}
+          <MarkdownContent content={content} streaming={streaming} />
         </div>
-        {/* Copy always visible for assistant messages (not during streaming) */}
         {!streaming && (
           <div className="pl-1">
             <CopyButton text={content} />
