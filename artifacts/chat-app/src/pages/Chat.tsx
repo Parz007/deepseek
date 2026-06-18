@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
 import { useGetConversation, useCreateConversation, getListConversationsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check, Crown } from "lucide-react";
+import { ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
 import ReactMarkdown from "react-markdown";
@@ -509,30 +509,6 @@ export default function Chat() {
           </div>
         </div>
 
-        {isPremium ? (
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl flex-shrink-0"
-            style={{ background: "hsl(45 90% 50% / 0.15)", border: "1px solid hsl(45 90% 50% / 0.3)" }}>
-            <Crown size={12} style={{ color: "hsl(45 90% 45%)" }} />
-            <span className="text-[11px] font-bold" style={{ color: "hsl(45 90% 40%)" }}>
-              {subStatus?.plan === "lifetime" ? "Lifetime" : "Pro"}
-            </span>
-          </div>
-        ) : (
-          <button
-            onClick={() => openPremium(isLimited)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl flex-shrink-0 font-bold text-xs transition-all active:scale-95"
-            style={{
-              background: isPending
-                ? "hsl(var(--muted))"
-                : "linear-gradient(135deg, hsl(45 90% 50%), hsl(35 95% 55%))",
-              color: isPending ? "hsl(var(--muted-foreground))" : "white",
-              boxShadow: isPending ? "none" : "0 2px 10px hsl(45 90% 50% / 0.4)",
-            }}
-          >
-            <Crown size={12} />
-            {isPending ? "Pending…" : "Join Premium"}
-          </button>
-        )}
 
         {/* Model selector */}
         <div className="relative flex-shrink-0">
