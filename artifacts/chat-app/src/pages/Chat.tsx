@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
 import { useGetConversation, useCreateConversation, getListConversationsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Send, Sparkles, AlertCircle, Zap, ChevronDown, Copy, Check, Crown } from "lucide-react";
+import { ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check, Crown } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
 
@@ -57,6 +57,7 @@ export default function Chat() {
   const [optimisticUser, setOptimisticUser] = useState("");
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showPremium, setShowPremium] = useState(false);
+  const [premiumTriggeredByLimit, setPremiumTriggeredByLimit] = useState(false);
   const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
   const [claimSubmitted, setClaimSubmitted] = useState(false);
 
@@ -79,7 +80,15 @@ export default function Chat() {
     } catch { /* ignore */ }
   }, [clientId, apiBase]);
 
-  useEffect(() => { fetchSubStatus(); }, [fetchSubStatus]);
+  // Auto-open premium modal if URL has ?premium=1 (from Telegram button)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("premium") === "1") {
+      setShowPremium(true);
+      setPremiumTriggeredByLimit(false);
+    }
+    fetchSubStatus();
+  }, [fetchSubStatus]);
 
   useEffect(() => {
     if (conv?.messages) {
@@ -111,9 +120,14 @@ export default function Chat() {
 
   const isLimited = subStatus !== null && !subStatus.isActive && subStatus.messageCount >= FREE_LIMIT;
 
+  const openPremium = (byLimit = false) => {
+    setPremiumTriggeredByLimit(byLimit);
+    setShowPremium(true);
+  };
+
   const handleSend = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
-    if (isLimited) { setShowPremium(true); return; }
+    if (isLimited) { openPremium(true); return; }
 
     const userMessage = input.trim();
     setInput("");
@@ -144,10 +158,9 @@ export default function Chat() {
         signal: abortRef.current.signal,
       });
 
-      // 402 = free limit reached
       if (res.status === 402) {
         await fetchSubStatus();
-        setShowPremium(true);
+        openPremium(true);
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage },
         ]);
@@ -187,7 +200,6 @@ export default function Chat() {
         { id: (Date.now() + 1).toString(), role: "assistant", content: full },
       ]);
 
-      // refresh subscription count after message
       fetchSubStatus();
 
       if (isNew && targetId) navigate(`/chat/${targetId}`, { replace: true });
@@ -268,7 +280,7 @@ export default function Chat() {
           </div>
         ) : (
           <button
-            onClick={() => setShowPremium(true)}
+            onClick={() => openPremium(false)}
             className="flex items-center gap-1 px-2 py-1 rounded-xl flex-shrink-0 transition-all active:scale-95"
             style={{
               background: isLimited ? "hsl(var(--destructive) / 0.1)" : "hsl(var(--muted))",
@@ -362,7 +374,7 @@ export default function Chat() {
               {!isPremium && (
                 <p className="text-xs mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.7)" }}>
                   {isLimited
-                    ? <><span style={{ color: "hsl(var(--destructive))" }}>Free limit reached.</span> <button onClick={() => setShowPremium(true)} style={{ color: "hsl(var(--primary))", textDecoration: "underline" }}>Upgrade to continue</button></>
+                    ? <><span style={{ color: "hsl(var(--destructive))" }}>Free limit reached.</span> <button onClick={() => openPremium(true)} style={{ color: "hsl(var(--primary))", textDecoration: "underline" }}>Upgrade to continue</button></>
                     : `${FREE_LIMIT - msgCount} free questions remaining`}
                 </p>
               )}
@@ -414,7 +426,7 @@ export default function Chat() {
             </div>
             {!isPending && (
               <button
-                onClick={() => setShowPremium(true)}
+                onClick={() => openPremium(true)}
                 className="px-5 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-95"
                 style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 4px 16px hsl(252 82% 68% / 0.4)" }}
               >
@@ -446,7 +458,7 @@ export default function Chat() {
             ref={textareaRef}
             value={input}
             onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); isLimited ? setShowPremium(true) : handleSend(); } }}
+            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); isLimited ? openPremium(true) : handleSend(); } }}
             disabled={isStreaming}
             placeholder={isLimited ? "Upgrade to send more messages…" : "Message DeepSeek…"}
             rows={1}
@@ -454,7 +466,7 @@ export default function Chat() {
             style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
           />
           <button
-            onClick={isLimited ? () => setShowPremium(true) : handleSend}
+            onClick={isLimited ? () => openPremium(true) : handleSend}
             disabled={!isLimited && !canSend}
             className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
             style={{
@@ -480,6 +492,7 @@ export default function Chat() {
           onClose={() => { setShowPremium(false); fetchSubStatus(); }}
           onClaimSubmitted={() => { setClaimSubmitted(true); fetchSubStatus(); }}
           claimStatus={claimSubmitted || isPending ? "pending" : "idle"}
+          triggeredByLimit={premiumTriggeredByLimit}
         />
       )}
     </div>
@@ -520,7 +533,7 @@ function CopyButton({ text }: { text: string }) {
       }}
     >
       {copied ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} strokeWidth={2} />}
-      <span className="text-[10px] font-medium leading-none">{copied ? "Copied" : "Copy"}</span>
+      <span className="text-[10px] font-medium leading-none">{copied ? "Copied!" : "Copy"}</span>
     </button>
   );
 }
@@ -533,8 +546,9 @@ function MessageBubble({ role, content, streaming, error }: {
 }) {
   if (role === "user") {
     return (
-      <div className="flex flex-col items-end gap-1 group">
-        <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-150 pr-1">
+      <div className="flex flex-col items-end gap-1">
+        {/* Copy always visible */}
+        <div className="pr-1">
           <CopyButton text={content} />
         </div>
         <div
@@ -554,34 +568,33 @@ function MessageBubble({ role, content, streaming, error }: {
   }
 
   return (
-    <div className="flex items-end gap-2.5 group">
+    <div className="flex items-end gap-2.5">
       <AIAvatar />
       <div className="flex flex-col gap-1 max-w-[80%]">
-        <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-150 pl-1">
-          <CopyButton text={content} />
-        </div>
         <div
           className="px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
           style={{
             background: error ? "hsl(var(--destructive) / 0.08)" : "hsl(var(--card))",
-            border: `1px solid ${error ? "hsl(var(--destructive) / 0.25)" : "hsl(var(--card-border))"}`,
+            border: `1px solid ${error ? "hsl(var(--destructive) / 0.25)" : "hsl(var(--card-border, var(--border)))"}`,
             color: error ? "hsl(var(--destructive))" : "hsl(var(--foreground))",
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",
           }}
         >
-          {error && (
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <AlertCircle size={13} />
-              <span className="text-xs font-medium">Error</span>
-            </div>
-          )}
           {content}
           {streaming && (
-            <span className="cursor-blink inline-block w-[2px] h-[14px] ml-0.5 rounded-sm align-middle"
-              style={{ background: "hsl(var(--primary))" }} />
+            <span
+              className="inline-block w-0.5 h-3.5 ml-0.5 align-middle rounded-full animate-pulse"
+              style={{ background: "hsl(var(--primary))" }}
+            />
           )}
         </div>
+        {/* Copy always visible for assistant messages (not during streaming) */}
+        {!streaming && (
+          <div className="pl-1">
+            <CopyButton text={content} />
+          </div>
+        )}
       </div>
     </div>
   );
