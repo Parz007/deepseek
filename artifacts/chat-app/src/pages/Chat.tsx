@@ -267,19 +267,22 @@ export default function Chat() {
         const res = await fetch(`${apiBase}/api/generate-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Client-ID": clientId },
-          body: JSON.stringify({ prompt: userMessage }),
+          body: JSON.stringify({
+            prompt: userMessage || "Edit this image",
+            imageBase64: capturedImage || undefined,
+          }),
         });
-        if (res.status === 402) { await fetchSubStatus(); openPremium(true); setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage }]); return; }
+        if (res.status === 402) { await fetchSubStatus(); openPremium(true); setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }]); return; }
         if (!res.ok) {
           const err = await res.json().catch(() => ({ error: "Generation failed" })) as any;
-          setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage }, { id: (Date.now() + 1).toString(), role: "assistant", content: err.error || "Image generation failed.", error: true }]);
+          setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: err.error || "Image generation failed.", error: true }]);
           return;
         }
         const { imageUrl } = await res.json() as { imageUrl: string };
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage }, { id: (Date.now() + 1).toString(), role: "assistant", content: userMessage, imageUrl }]);
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: userMessage, imageUrl }]);
         fetchSubStatus();
       } catch {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage }, { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true }]);
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true }]);
       } finally { setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); }
       return;
     }
@@ -342,7 +345,7 @@ export default function Chat() {
   const isPremium = subStatus?.isActive ?? false;
   const isPending = subStatus?.status === "pending";
   const fluxMode = isImageModel(model);
-    return (
+  return (
     <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
 
       <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
