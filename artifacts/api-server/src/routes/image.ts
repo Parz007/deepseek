@@ -70,8 +70,8 @@ router.post("/generate-image", async (req, res) => {
 
     const choice = data?.choices?.[0];
     const message = choice?.message;
-    const images: Array<{ url: string }> | undefined = message?.images;
-    const imageUrl: string = images?.[0]?.url ?? "";
+    const images: Array<{ type: string; image_url?: { url: string }; url?: string }> | undefined = message?.images;
+    const imageUrl: string = images?.[0]?.image_url?.url ?? images?.[0]?.url ?? "";
 
     if (!imageUrl) {
       console.error("[image] No image URL found. Diagnostics:", JSON.stringify({
