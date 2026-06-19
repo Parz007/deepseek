@@ -1,4 +1,5 @@
-import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
+import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
+import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -10,13 +11,19 @@ import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient();
 
+function StartRedirect() {
+  const [, navigate] = useLocation();
+  useEffect(() => {
+    navigate("/chat/new", { replace: true });
+  }, [navigate]);
+  return null;
+}
+
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Home} />
-      <Route path="/start">
-        <Redirect to="/chat/new" />
-      </Route>
+      <Route path="/start" component={StartRedirect} />
       <Route path="/chat/new" component={Chat} />
       <Route path="/chat/:id" component={Chat} />
       <Route path="/settings" component={Settings} />
