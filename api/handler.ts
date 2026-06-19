@@ -290,7 +290,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
 
   const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
 
-  // ── /start command handler ────────────────────────────────────────────────
   const msg = update?.message;
   if (msg?.text?.startsWith("/start")) {
     const userChatId = msg.chat.id;
@@ -312,7 +311,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
     return;
   }
 
-  // ── Approve / Reject callback handler ────────────────────────────────────
   const callback = update?.callback_query;
   if (!callback) return;
   const data: string = callback.data ?? "";
@@ -436,7 +434,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     await db.insert(messagesTable).values({ conversationId: convId, role: "user", content });
 
-    // Keep only last 30 messages to avoid context overflow
     const allHistory = await db.select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable).where(eq(messagesTable.conversationId, convId)).orderBy(asc(messagesTable.createdAt));
     const history = allHistory.slice(-30);
@@ -509,6 +506,78 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   } catch (err: any) {
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     res.end();
+  }
+});
+
+// ── Image generation ────────────────────────────────────────────────────────
+app.post("/api/generate-image", async (req, res) => {
+  const { prompt } = req.body;
+  const clientId = req.headers["x-client-id"] as string | undefined;
+
+  if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+    res.status(400).json({ error: "prompt required" });
+    return;
+  }
+
+  try {
+    if (clientId) {
+      const db = getDb();
+      const sub = await getOrCreateSubscription(db, clientId);
+      const isActive =
+        sub.status === "active" &&
+        (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
+      if (!isActive) {
+        const msgCount = await getMessageCount(db, clientId);
+        if (msgCount >= FREE_LIMIT) {
+          res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
+          return;
+        }
+      }
+    }
+
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
+      return;
+    }
+
+    const response = await fetch("https://openrouter.ai/api/v1/images/generations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
+        "X-Title": "DeepSeek Chat",
+      },
+      body: JSON.stringify({
+        model: "black-forest-labs/flux.2-klein-4b",
+        prompt: prompt.trim(),
+        n: 1,
+        size: "1024x1024",
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("OpenRouter image generation failed", response.status, errText);
+      res.status(502).json({ error: `Image generation failed: HTTP ${response.status}` });
+      return;
+    }
+
+    const data = await response.json() as any;
+    const item = data?.data?.[0];
+    const imageUrl: string = item?.url ?? (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : "");
+
+    if (!imageUrl) {
+      console.error("No image URL in OpenRouter response", data);
+      res.status(502).json({ error: "No image returned from generation API" });
+      return;
+    }
+
+    res.json({ imageUrl });
+  } catch (err: any) {
+    console.error("Image generation error", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
