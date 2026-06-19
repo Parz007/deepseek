@@ -40,7 +40,7 @@ router.post("/generate-image", async (req, res) => {
         "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "black-forest-labs/FLUX.1-schnell-Free",
+        model: "black-forest-labs/flux.2-klein-4b",
         prompt: prompt.trim(),
         n: 1,
         width: 1024,
