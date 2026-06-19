@@ -1,7 +1,10 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 
 export type Theme = "dark" | "light";
-export type Model = "deepseek/deepseek-v4-flash" | "deepseek/deepseek-v4-pro";
+export type Model =
+  | "deepseek/deepseek-v4-flash"
+  | "deepseek/deepseek-v4-pro"
+  | "black-forest-labs/flux.2-klein-4b";
 
 interface AppContextType {
   theme: Theme;
@@ -12,13 +15,20 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | null>(null);
 
+const VALID_MODELS: Model[] = [
+  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-pro",
+  "black-forest-labs/flux.2-klein-4b",
+];
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
     return (localStorage.getItem("theme") as Theme) || "dark";
   });
 
   const [model, setModelState] = useState<Model>(() => {
-    return (localStorage.getItem("model") as Model) || "deepseek/deepseek-v4-flash";
+    const saved = localStorage.getItem("model") as Model;
+    return VALID_MODELS.includes(saved) ? saved : "deepseek/deepseek-v4-flash";
   });
 
   useEffect(() => {
