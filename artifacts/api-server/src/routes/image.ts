@@ -27,32 +27,31 @@ router.post("/generate-image", async (req, res) => {
       }
     }
 
-    const apiKey = process.env.TOGETHER_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      res.status(500).json({ error: "TOGETHER_API_KEY not configured" });
+      res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
       return;
     }
 
-    const response = await fetch("https://api.together.xyz/v1/images/generations", {
+    const response = await fetch("https://openrouter.ai/api/v1/images/generations", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
+        "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
+        "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
         model: "black-forest-labs/flux.2-klein-4b",
         prompt: prompt.trim(),
         n: 1,
-        width: 1024,
-        height: 1024,
-        steps: 4,
-        response_format: "url",
+        size: "1024x1024",
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("Together AI image generation failed", response.status, errText);
+      console.error("OpenRouter image generation failed", response.status, errText);
       res.status(502).json({ error: `Image generation failed: HTTP ${response.status}` });
       return;
     }
@@ -63,7 +62,7 @@ router.post("/generate-image", async (req, res) => {
     const imageUrl: string = item?.url ?? (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : "");
 
     if (!imageUrl) {
-      console.error("No image URL in Together AI response", data);
+      console.error("No image URL in OpenRouter response", data);
       res.status(502).json({ error: "No image returned from generation API" });
       return;
     }
