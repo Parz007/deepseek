@@ -468,7 +468,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   }
 });
 
-// ── Image generation (Pollinations.ai — free, no API key needed) ─────────────
+// ── Image generation (OpenRouter — Flux) ─────────────────────────────────────
 app.post("/api/generate-image", async (req, res) => {
   const { prompt } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
@@ -494,12 +494,66 @@ app.post("/api/generate-image", async (req, res) => {
       }
     }
 
-    const encodedPrompt = encodeURIComponent(prompt.trim());
-    const imageUrl = `https://gen.pollinations.ai/image/${encodedPrompt}?model=flux&width=1024&height=1024&nologo=true`;
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
+      return;
+    }
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
+        "X-Title": "DeepSeek Chat",
+      },
+      body: JSON.stringify({
+        model: "black-forest-labs/flux.2-klein-4b",
+        modalities: ["image"],
+        messages: [
+          { role: "user", content: prompt.trim() },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("[image] OpenRouter request failed", response.status, errText);
+      res.status(502).json({ error: `Image generation failed: HTTP ${response.status}` });
+      return;
+    }
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch (parseErr) {
+      console.error("[image] Failed to parse OpenRouter response as JSON", parseErr);
+      res.status(502).json({ error: "Invalid response from generation API" });
+      return;
+    }
+
+    console.log("[image] OpenRouter raw response:", JSON.stringify(data, null, 2));
+
+    const choice = data?.choices?.[0];
+    const message = choice?.message;
+    const images: Array<{ url: string }> | undefined = message?.images;
+    const imageUrl: string = images?.[0]?.url ?? "";
+
+    if (!imageUrl) {
+      console.error("[image] No image URL found. Diagnostics:", JSON.stringify({
+        finishReason: choice?.finish_reason,
+        messageKeys: message ? Object.keys(message) : null,
+        imagesValue: images,
+        content: message?.content,
+      }, null, 2));
+      res.status(502).json({ error: "No image returned from generation API" });
+      return;
+    }
 
     res.json({ imageUrl });
   } catch (err: any) {
-    console.error("Image generation error", err);
+    console.error("[image] Image generation error", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
