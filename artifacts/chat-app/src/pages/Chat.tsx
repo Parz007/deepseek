@@ -18,7 +18,10 @@ function getUserPrompt(): string {
 }
 
 const FLUX_MODEL: Model = "black-forest-labs/flux.2-klein-4b";
-function isImageModel(m: Model): boolean { return m === FLUX_MODEL; }
+
+function isImageModel(m: Model): boolean {
+  return m === FLUX_MODEL;
+}
 
 interface StreamMessage {
   id: string;
@@ -47,7 +50,10 @@ const FREE_LIMIT = 20;
 
 function getClientId(): string {
   let id = localStorage.getItem("clientId");
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem("clientId", id); }
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("clientId", id);
+  }
   return id;
 }
 
@@ -59,16 +65,26 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
     setTimeout(() => setCopied(false), 1800);
   };
   return (
-    <div className="relative my-3 rounded-xl overflow-hidden text-sm" style={{ background: "hsl(230 20% 5%)", border: "1px solid hsl(230 14% 18%)" }}>
-      <div className="flex items-center justify-between px-4 py-2" style={{ background: "hsl(230 18% 8%)", borderBottom: "1px solid hsl(230 14% 15%)" }}>
-        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "hsl(220 10% 45%)" }}>{lang || "code"}</span>
-        <button onClick={handleCopy} className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium transition-all active:scale-90"
-          style={{ background: copied ? "hsl(142 62% 52% / 0.15)" : "hsl(230 14% 14%)", border: `1px solid ${copied ? "hsl(142 62% 52% / 0.3)" : "hsl(230 14% 20%)"}`, color: copied ? "hsl(142 62% 50%)" : "hsl(220 10% 55%)" }}>
+    <div className="relative my-3 rounded-xl overflow-hidden text-sm"
+      style={{ background: "hsl(230 20% 5%)", border: "1px solid hsl(230 14% 18%)" }}>
+      <div className="flex items-center justify-between px-4 py-2"
+        style={{ background: "hsl(230 18% 8%)", borderBottom: "1px solid hsl(230 14% 15%)" }}>
+        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "hsl(220 10% 45%)" }}>
+          {lang || "code"}
+        </span>
+        <button onClick={handleCopy}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium transition-all active:scale-90"
+          style={{
+            background: copied ? "hsl(142 62% 52% / 0.15)" : "hsl(230 14% 14%)",
+            border: `1px solid ${copied ? "hsl(142 62% 52% / 0.3)" : "hsl(230 14% 20%)"}`,
+            color: copied ? "hsl(142 62% 50%)" : "hsl(220 10% 55%)",
+          }}>
           {copied ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} />}
           {copied ? "Copied!" : "Copy"}
         </button>
       </div>
-      <pre className="overflow-x-auto px-4 py-3 text-[13px] leading-relaxed" style={{ margin: 0, color: "hsl(220 18% 82%)", fontFamily: "var(--app-font-mono)" }}>
+      <pre className="overflow-x-auto px-4 py-3 text-[13px] leading-relaxed"
+        style={{ margin: 0, color: "hsl(220 18% 82%)", fontFamily: "var(--app-font-mono)" }}>
         <code>{code}</code>
       </pre>
     </div>
@@ -82,7 +98,14 @@ function buildMarkdownComponents(textColor: string): Components {
       const lang = (className || "").replace("language-", "");
       const code = String(children).replace(/\n$/, "");
       if (!isInline) return <CodeBlock lang={lang} code={code} />;
-      return <code style={{ background: "hsl(230 18% 13%)", color: "hsl(198 80% 70%)", padding: "1px 5px", borderRadius: "4px", fontFamily: "var(--app-font-mono)", fontSize: "0.85em", border: "1px solid hsl(230 14% 20%)" }} {...props}>{children}</code>;
+      return (
+        <code style={{
+          background: "hsl(230 18% 13%)", color: "hsl(198 80% 70%)",
+          padding: "1px 5px", borderRadius: "4px",
+          fontFamily: "var(--app-font-mono)", fontSize: "0.85em",
+          border: "1px solid hsl(230 14% 20%)",
+        }} {...props}>{children}</code>
+      );
     },
     h1({ children }) { return <h1 style={{ color: textColor, fontSize: "1.2em", fontWeight: 700, margin: "1em 0 0.4em", borderBottom: "1px solid hsl(var(--border))", paddingBottom: "0.3em" }}>{children}</h1>; },
     h2({ children }) { return <h2 style={{ color: textColor, fontSize: "1.1em", fontWeight: 600, margin: "0.9em 0 0.35em" }}>{children}</h2>; },
@@ -93,9 +116,13 @@ function buildMarkdownComponents(textColor: string): Components {
     li({ children }) { return <li style={{ color: textColor, lineHeight: 1.65 }}>{children}</li>; },
     strong({ children }) { return <strong style={{ color: textColor, fontWeight: 700 }}>{children}</strong>; },
     em({ children }) { return <em style={{ color: textColor, fontStyle: "italic" }}>{children}</em>; },
-    blockquote({ children }) { return <blockquote style={{ margin: "0.6em 0", paddingLeft: "0.9em", borderLeft: "3px solid hsl(252 82% 68% / 0.5)", color: "hsl(var(--muted-foreground))", fontStyle: "italic" }}>{children}</blockquote>; },
+    blockquote({ children }) {
+      return <blockquote style={{ margin: "0.6em 0", paddingLeft: "0.9em", borderLeft: "3px solid hsl(252 82% 68% / 0.5)", color: "hsl(var(--muted-foreground))", fontStyle: "italic" }}>{children}</blockquote>;
+    },
     hr() { return <hr style={{ border: "none", borderTop: "1px solid hsl(var(--border))", margin: "0.8em 0" }} />; },
-    table({ children }) { return <div style={{ overflowX: "auto", margin: "0.6em 0" }}><table style={{ borderCollapse: "collapse", width: "100%", fontSize: "0.88em" }}>{children}</table></div>; },
+    table({ children }) {
+      return <div style={{ overflowX: "auto", margin: "0.6em 0" }}><table style={{ borderCollapse: "collapse", width: "100%", fontSize: "0.88em" }}>{children}</table></div>;
+    },
     thead({ children }) { return <thead style={{ background: "hsl(var(--muted))" }}>{children}</thead>; },
     th({ children }) { return <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600, color: textColor, border: "1px solid hsl(var(--border))", fontSize: "0.85em", whiteSpace: "nowrap" }}>{children}</th>; },
     td({ children }) { return <td style={{ padding: "5px 10px", color: textColor, border: "1px solid hsl(var(--border))", verticalAlign: "top" }}>{children}</td>; },
@@ -130,97 +157,16 @@ function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt?: strin
         const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
         URL.revokeObjectURL(url);
       }
-    } catch { } finally { setDownloading(false); }
+    } catch { /* ignore */ } finally { setDownloading(false); }
   };
   return (
-    <button onClick={handleDownload} disabled={downloading} title={prompt ? `Download: ${prompt}` : "Download image"}
+    <button onClick={handleDownload} disabled={downloading}
+      title={prompt ? `Download: ${prompt}` : "Download image"}
       className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-90"
       style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
       <Download size={12} />
       {downloading ? "Saving…" : "Download"}
     </button>
-  );
-}
-
-function AIAvatar({ flux }: { flux?: boolean }) {
-  return (
-    <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-      style={{ background: flux ? "linear-gradient(135deg, hsl(280 80% 60% / 0.2), hsl(320 70% 55% / 0.1))" : "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))", border: flux ? "1px solid hsl(280 80% 60% / 0.2)" : "1px solid hsl(252 82% 68% / 0.2)" }}>
-      {flux ? <ImageIcon size={13} style={{ color: "hsl(280 80% 65%)" }} /> : <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />}
-    </div>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1800); } catch { }
-  };
-  return (
-    <button onClick={handleCopy} title="Copy message"
-      className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg transition-all active:scale-90 select-none"
-      style={{ background: copied ? "hsl(142 62% 52% / 0.12)" : "hsl(var(--muted))", border: `1px solid ${copied ? "hsl(142 62% 52% / 0.3)" : "hsl(var(--border))"}`, color: copied ? "hsl(142 62% 45%)" : "hsl(var(--muted-foreground))" }}>
-      {copied ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} strokeWidth={2} />}
-      <span className="text-[10px] font-medium leading-none">{copied ? "Copied!" : "Copy"}</span>
-    </button>
-  );
-}
-
-function MessageBubble({ role, content, streaming, error, imageUrl, attachedImageUrl }: {
-  role: "user" | "assistant"; content: string; streaming?: boolean; error?: boolean; imageUrl?: string; attachedImageUrl?: string;
-}) {
-  if (role === "user") {
-    return (
-      <div className="flex flex-col items-end gap-1">
-        <div className="pr-1"><CopyButton text={content} /></div>
-        {attachedImageUrl && <img src={attachedImageUrl} alt="Attached" className="max-w-[200px] rounded-xl object-cover mb-1" style={{ border: "1px solid hsl(var(--border))" }} />}
-        {content && (
-          <div className="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-md text-sm leading-relaxed"
-            style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 3px 14px hsl(252 82% 68% / 0.35)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-            {content}
-          </div>
-        )}
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="flex items-end gap-2.5">
-        <AIAvatar />
-        <div className="flex flex-col gap-1 max-w-[85%]">
-          <div className="px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
-            style={{ background: "hsl(var(--destructive) / 0.08)", border: "1px solid hsl(var(--destructive) / 0.25)", color: "hsl(var(--destructive))", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-            {content}
-          </div>
-        </div>
-      </div>
-    );
-  }
-  if (imageUrl) {
-    return (
-      <div className="flex items-start gap-2.5">
-        <AIAvatar flux />
-        <div className="flex flex-col gap-2 min-w-0 max-w-[85%]">
-          <div className="rounded-2xl rounded-bl-md overflow-hidden" style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-            <img src={imageUrl} alt={content} className="w-full block" style={{ maxWidth: "400px", display: "block" }} />
-          </div>
-          {content && <p className="text-[11px] px-1 leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>{content}</p>}
-          <div className="pl-1"><DownloadButton imageUrl={imageUrl} prompt={content} /></div>
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="flex items-start gap-2.5">
-      <AIAvatar />
-      <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
-        <div className="px-4 py-3 rounded-2xl rounded-bl-md" style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-          <MarkdownContent content={content} streaming={streaming} />
-        </div>
-        {!streaming && <div className="pl-1"><CopyButton text={content} /></div>}
-      </div>
-    </div>
   );
 }
 
@@ -256,8 +202,12 @@ export default function Chat() {
   const fetchSubStatus = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/subscription/status`, { headers: { "X-Client-ID": clientId } });
-      if (res.ok) { const data = await res.json() as SubStatus; setSubStatus(data); if (data.status === "pending") setClaimSubmitted(true); }
-    } catch { }
+      if (res.ok) {
+        const data = await res.json() as SubStatus;
+        setSubStatus(data);
+        if (data.status === "pending") setClaimSubmitted(true);
+      }
+    } catch { /* ignore */ }
   }, [clientId, apiBase]);
 
   useEffect(() => {
@@ -267,7 +217,9 @@ export default function Chat() {
   }, [fetchSubStatus]);
 
   useEffect(() => {
-    if (conv?.messages) setMessages(conv.messages.map(m => ({ id: String(m.id), role: m.role as "user" | "assistant", content: m.content })));
+    if (conv?.messages) {
+      setMessages(conv.messages.map(m => ({ id: String(m.id), role: m.role as "user" | "assistant", content: m.content })));
+    }
   }, [conv]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamingText, optimisticUser]);
@@ -371,7 +323,7 @@ export default function Chat() {
                 setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: json.error, error: true }]);
                 return;
               }
-            } catch { }
+            } catch { /* ignore */ }
           }
         }
       }
@@ -390,19 +342,23 @@ export default function Chat() {
   const isPremium = subStatus?.isActive ?? false;
   const isPending = subStatus?.status === "pending";
   const fluxMode = isImageModel(model);
-
-  return (
+    return (
     <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
 
-      <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0" style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
-        <button onClick={() => navigate("/")} className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+      <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
+        style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
+        <button onClick={() => navigate("/")}
+          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
           style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
           <ArrowLeft size={17} />
         </button>
 
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{ background: fluxMode ? "linear-gradient(135deg, hsl(280 80% 60%), hsl(320 70% 55%))" : "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))", boxShadow: fluxMode ? "0 3px 12px hsl(280 80% 60% / 0.35)" : "0 3px 12px hsl(252 82% 68% / 0.35)" }}>
+            style={{
+              background: fluxMode ? "linear-gradient(135deg, hsl(280 80% 60%), hsl(320 70% 55%))" : "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))",
+              boxShadow: fluxMode ? "0 3px 12px hsl(280 80% 60% / 0.35)" : "0 3px 12px hsl(252 82% 68% / 0.35)",
+            }}>
             {fluxMode ? <ImageIcon size={15} className="text-white" /> : <Sparkles size={15} className="text-white" />}
           </div>
           <div className="min-w-0 flex-1">
@@ -416,7 +372,10 @@ export default function Chat() {
               </span>
               {isStreaming && !fluxMode && (
                 <span className="flex gap-0.5 ml-1">
-                  {[0, 0.15, 0.3].map((delay, i) => <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full" style={{ background: "hsl(var(--primary))", animationDelay: `${delay}s` }} />)}
+                  {[0, 0.15, 0.3].map((delay, i) => (
+                    <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full"
+                      style={{ background: "hsl(var(--primary))", animationDelay: `${delay}s` }} />
+                  ))}
                 </span>
               )}
               {isStreaming && fluxMode && <span className="text-[10px] ml-1" style={{ color: "hsl(280 80% 65%)" }}>generating…</span>}
@@ -440,7 +399,9 @@ export default function Chat() {
                   className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
                   style={{ color: model === m ? "hsl(var(--primary))" : "hsl(var(--foreground))", background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent" }}
                   onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
-                  onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; } className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>}
+                  onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                  <span>{MODEL_LABELS[m]}</span>
+                  {m === "deepseek/deepseek-v4-flash" && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>}
                   {m === "deepseek/deepseek-v4-pro" && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>}
                   {m === FLUX_MODEL && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(280 80% 60% / 0.15)", color: "hsl(280 80% 65%)" }}>Image</span>}
                 </button>
@@ -460,7 +421,10 @@ export default function Chat() {
         {isNew && !optimisticUser && (
           <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-4 pb-8">
             <div className="relative w-16 h-16 rounded-3xl flex items-center justify-center"
-              style={{ background: fluxMode ? "linear-gradient(135deg, hsl(280 80% 60% / 0.15), hsl(320 70% 55% / 0.08))" : "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))", border: fluxMode ? "1px solid hsl(280 80% 60% / 0.25)" : "1px solid hsl(252 82% 68% / 0.25)" }}>
+              style={{
+                background: fluxMode ? "linear-gradient(135deg, hsl(280 80% 60% / 0.15), hsl(320 70% 55% / 0.08))" : "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
+                border: fluxMode ? "1px solid hsl(280 80% 60% / 0.25)" : "1px solid hsl(252 82% 68% / 0.25)",
+              }}>
               {fluxMode ? <ImageIcon size={26} style={{ color: "hsl(280 80% 65%)" }} /> : <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />}
             </div>
             <div>
@@ -479,6 +443,7 @@ export default function Chat() {
         ))}
 
         {optimisticUser && <MessageBubble role="user" content={optimisticUser} attachedImageUrl={attachedImage || undefined} />}
+
         {isStreaming && streamingText && <MessageBubble role="assistant" content={streamingText} streaming />}
 
         {isStreaming && !streamingText && optimisticUser && !fluxMode && (
@@ -486,7 +451,9 @@ export default function Chat() {
             <AIAvatar />
             <div className="px-4 py-3 rounded-2xl rounded-bl-sm" style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}>
               <div className="flex gap-1 items-center h-4">
-                {[0, 0.18, 0.36].map((delay, i) => <span key={i} className="typing-dot w-1.5 h-1.5 rounded-full" style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />)}
+                {[0, 0.18, 0.36].map((delay, i) => (
+                  <span key={i} className="typing-dot w-1.5 h-1.5 rounded-full" style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
+                ))}
               </div>
             </div>
           </div>
@@ -505,7 +472,8 @@ export default function Chat() {
         {isLimited && !isStreaming && (
           <div className="mx-4 mb-2 rounded-2xl overflow-hidden" style={{ border: "1px solid hsl(var(--border))", background: "hsl(var(--card))" }}>
             <div className="px-5 py-4 flex flex-col items-center text-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, hsl(252 82% 68% / 0.12), hsl(198 80% 56% / 0.08))", border: "1px solid hsl(252 82% 68% / 0.2)" }}>
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, hsl(252 82% 68% / 0.12), hsl(198 80% 56% / 0.08))", border: "1px solid hsl(252 82% 68% / 0.2)" }}>
                 <Sparkles size={18} style={{ color: "hsl(var(--primary))" }} />
               </div>
               <div>
@@ -517,7 +485,8 @@ export default function Chat() {
                 </p>
               </div>
               {!isPending && (
-                <button onClick={() => openPremium(true)} className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.98]"
+                <button onClick={() => openPremium(true)}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.98]"
                   style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 4px 16px hsl(252 82% 68% / 0.3)" }}>
                   Upgrade to Premium
                 </button>
@@ -529,7 +498,8 @@ export default function Chat() {
         <div ref={bottomRef} />
       </main>
 
-      <footer className="flex-shrink-0 px-4 pt-3 pb-6" style={{ background: "hsl(var(--background))", borderTop: "1px solid hsl(var(--border))" }}>
+      <footer className="flex-shrink-0 px-4 pt-3 pb-6"
+        style={{ background: "hsl(var(--background))", borderTop: "1px solid hsl(var(--border))" }}>
         {!isPremium && !isLimited && msgCount >= 15 && (
           <div className="mb-3 flex items-center justify-between px-1">
             <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground))" }}>
@@ -540,7 +510,8 @@ export default function Chat() {
         )}
 
         {isPending && (
-          <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center" style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}>
+          <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center"
+            style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}>
             <span className="text-[11px] font-medium" style={{ color: "hsl(252 82% 60%)" }}>
               Payment pending — unlimited access activates once confirmed
             </span>
@@ -548,23 +519,28 @@ export default function Chat() {
         )}
 
         {isLimited ? (
-          <div className="flex items-center justify-between gap-3 rounded-2xl px-4 py-3" style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}>
+          <div className="flex items-center justify-between gap-3 rounded-2xl px-4 py-3"
+            style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}>
             <span className="text-sm flex-1" style={{ color: "hsl(var(--muted-foreground))" }}>Upgrade to send more messages</span>
-            <button onClick={() => openPremium(true)} className="flex-shrink-0 px-4 py-2 rounded-xl text-xs font-semibold transition-all active:scale-95"
+            <button onClick={() => openPremium(true)}
+              className="flex-shrink-0 px-4 py-2 rounded-xl text-xs font-semibold transition-all active:scale-95"
               style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 3px 10px hsl(252 82% 68% / 0.35)" }}>
               Upgrade
             </button>
           </div>
         ) : (
-          <div className="rounded-2xl overflow-hidden transition-all" style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}
+          <div className="rounded-2xl overflow-hidden transition-all"
+            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}
             onFocusCapture={e => { e.currentTarget.style.borderColor = fluxMode ? "hsl(280 80% 60% / 0.4)" : "hsl(252 82% 68% / 0.4)"; }}
             onBlurCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--card-border))"; }}>
 
             {attachedImage && (
               <div className="px-3 pt-3 flex items-start gap-2">
                 <div className="relative">
-                  <img src={attachedImage} alt="Attached" className="w-16 h-16 rounded-lg object-cover" style={{ border: "1px solid hsl(var(--border))" }} />
-                  <button onClick={removeAttachedImage} className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center"
+                  <img src={attachedImage} alt="Attached" className="w-16 h-16 rounded-lg object-cover"
+                    style={{ border: "1px solid hsl(var(--border))" }} />
+                  <button onClick={removeAttachedImage}
+                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center"
                     style={{ background: "hsl(var(--foreground))", color: "hsl(var(--background))" }}>
                     <X size={9} strokeWidth={3} />
                   </button>
@@ -577,7 +553,11 @@ export default function Chat() {
 
               <button onClick={() => fileInputRef.current?.click()} disabled={isStreaming} title="Attach image"
                 className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                style={{ background: attachedImage ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))", border: `1px solid ${attachedImage ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`, color: attachedImage ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))" }}>
+                style={{
+                  background: attachedImage ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
+                  border: `1px solid ${attachedImage ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
+                  color: attachedImage ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
+                }}>
                 <Paperclip size={14} />
               </button>
 
@@ -592,7 +572,11 @@ export default function Chat() {
 
               <button onClick={handleSend} disabled={!canSend}
                 className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                style={{ background: canSend ? fluxMode ? "linear-gradient(135deg, hsl(280 80% 60%), hsl(320 70% 55%))" : "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))", color: canSend ? "white" : "hsl(var(--muted-foreground))", boxShadow: canSend ? fluxMode ? "0 3px 12px hsl(280 80% 60% / 0.45)" : "0 3px 12px hsl(252 82% 68% / 0.45)" : "none" }}>
+                style={{
+                  background: canSend ? fluxMode ? "linear-gradient(135deg, hsl(280 80% 60%), hsl(320 70% 55%))" : "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
+                  color: canSend ? "white" : "hsl(var(--muted-foreground))",
+                  boxShadow: canSend ? fluxMode ? "0 3px 12px hsl(280 80% 60% / 0.45)" : "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
+                }}>
                 {fluxMode ? <ImageIcon size={15} strokeWidth={2} /> : <Send size={15} strokeWidth={2} />}
               </button>
             </div>
@@ -613,6 +597,109 @@ export default function Chat() {
           triggeredByLimit={premiumTriggeredByLimit}
         />
       )}
+    </div>
+  );
+}
+
+function AIAvatar({ flux }: { flux?: boolean }) {
+  return (
+    <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+      style={{
+        background: flux ? "linear-gradient(135deg, hsl(280 80% 60% / 0.2), hsl(320 70% 55% / 0.1))" : "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))",
+        border: flux ? "1px solid hsl(280 80% 60% / 0.2)" : "1px solid hsl(252 82% 68% / 0.2)",
+      }}>
+      {flux ? <ImageIcon size={13} style={{ color: "hsl(280 80% 65%)" }} /> : <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />}
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1800); }
+    catch { /* ignore */ }
+  };
+  return (
+    <button onClick={handleCopy} title="Copy message"
+      className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg transition-all active:scale-90 select-none"
+      style={{
+        background: copied ? "hsl(142 62% 52% / 0.12)" : "hsl(var(--muted))",
+        border: `1px solid ${copied ? "hsl(142 62% 52% / 0.3)" : "hsl(var(--border))"}`,
+        color: copied ? "hsl(142 62% 45%)" : "hsl(var(--muted-foreground))",
+      }}>
+      {copied ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} strokeWidth={2} />}
+      <span className="text-[10px] font-medium leading-none">{copied ? "Copied!" : "Copy"}</span>
+    </button>
+  );
+}
+
+function MessageBubble({ role, content, streaming, error, imageUrl, attachedImageUrl }: {
+  role: "user" | "assistant";
+  content: string;
+  streaming?: boolean;
+  error?: boolean;
+  imageUrl?: string;
+  attachedImageUrl?: string;
+}) {
+  if (role === "user") {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <div className="pr-1"><CopyButton text={content} /></div>
+        {attachedImageUrl && (
+          <img src={attachedImageUrl} alt="Attached" className="max-w-[200px] rounded-xl object-cover mb-1"
+            style={{ border: "1px solid hsl(var(--border))" }} />
+        )}
+        {content && (
+          <div className="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-md text-sm leading-relaxed"
+            style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 3px 14px hsl(252 82% 68% / 0.35)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {content}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-end gap-2.5">
+        <AIAvatar />
+        <div className="flex flex-col gap-1 max-w-[85%]">
+          <div className="px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
+            style={{ background: "hsl(var(--destructive) / 0.08)", border: "1px solid hsl(var(--destructive) / 0.25)", color: "hsl(var(--destructive))", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {content}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (imageUrl) {
+    return (
+      <div className="flex items-start gap-2.5">
+        <AIAvatar flux />
+        <div className="flex flex-col gap-2 min-w-0 max-w-[85%]">
+          <div className="rounded-2xl rounded-bl-md overflow-hidden"
+            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
+            <img src={imageUrl} alt={content} className="w-full block" style={{ maxWidth: "400px", display: "block" }} />
+          </div>
+          {content && <p className="text-[11px] px-1 leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>{content}</p>}
+          <div className="pl-1"><DownloadButton imageUrl={imageUrl} prompt={content} /></div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-start gap-2.5">
+      <AIAvatar />
+      <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
+        <div className="px-4 py-3 rounded-2xl rounded-bl-md"
+          style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
+          <MarkdownContent content={content} streaming={streaming} />
+        </div>
+        {!streaming && <div className="pl-1"><CopyButton text={content} /></div>}
+      </div>
     </div>
   );
 }
