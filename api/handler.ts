@@ -35,7 +35,7 @@ const subscriptionsTable = pgTable("subscriptions", {
 function getDb() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
-  const pool = new pg.Pool({ connectionString: url });
+  const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true } });
   return drizzle(pool);
 }
 
@@ -44,7 +44,7 @@ async function ensureTables() {
   if (_migrated) return;
   const url = process.env.DATABASE_URL;
   if (!url) return;
-  const pool = new pg.Pool({ connectionString: url });
+  const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true } });
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversations (
       id SERIAL PRIMARY KEY,
@@ -537,8 +537,8 @@ app.post("/api/generate-image", async (req, res) => {
 
     const choice = data?.choices?.[0];
     const message = choice?.message;
-    const images: Array<{ url: string }> | undefined = message?.images;
-    const imageUrl: string = images?.[0]?.url ?? "";
+    const images: Array<{ type: string; image_url?: { url: string }; url?: string }> | undefined = message?.images;
+    const imageUrl: string = images?.[0]?.image_url?.url ?? images?.[0]?.url ?? "";
 
     if (!imageUrl) {
       console.error("[image] No image URL found. Diagnostics:", JSON.stringify({
