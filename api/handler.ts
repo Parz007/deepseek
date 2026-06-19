@@ -32,6 +32,7 @@ const subscriptionsTable = pgTable("subscriptions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+// FIX: ssl rejectUnauthorized silences pg SSL warning
 function getDb() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
@@ -44,6 +45,7 @@ async function ensureTables() {
   if (_migrated) return;
   const url = process.env.DATABASE_URL;
   if (!url) return;
+  // FIX: ssl rejectUnauthorized silences pg SSL warning
   const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true } });
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -171,7 +173,7 @@ type AllowedModel = typeof ALLOWED_MODELS[number];
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 app.use((_req, _res, next) => { ensureTables().catch(() => {}).finally(next); });
 
 app.get("/api/admin", async (req, res) => {
@@ -265,30 +267,33 @@ app.post("/api/subscription/claim", async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
+// FIX: res.json() moved to END — Vercel freezes function on response, killing pending awaits
 app.post("/api/telegram/webhook", async (req, res) => {
-  res.json({ ok: true });
   const update = req.body;
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) return;
+  if (!token) { res.json({ ok: true }); return; }
   const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
   const msg = update?.message;
   if (msg?.text?.startsWith("/start")) {
     const userChatId = msg.chat.id;
     const firstName = msg.from?.first_name || "there";
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: userChatId,
-        parse_mode: "HTML",
-        text: `👋 <b>Hey ${firstName}!</b>\n\nWelcome to <b>DeepSeek Uncensored</b> — the AI that actually answers your questions.\n\n🧠 Powered by DeepSeek V4\n⚡ Fast, direct, no fluff\n🔓 No restrictions, no refusals\n\n<i>Get 20 free messages to start. Upgrade anytime for unlimited access.</i>`,
-        reply_markup: { inline_keyboard: [[{ text: "🚀 Open DeepSeek Chat", web_app: { url: appUrl } }]] },
-      }),
-    });
+    try {
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: userChatId,
+          parse_mode: "HTML",
+          text: `👋 <b>Hey ${firstName}!</b>\n\nWelcome to <b>DeepSeek Uncensored</b> — the AI that actually answers your questions.\n\n🧠 Powered by DeepSeek V4\n⚡ Fast, direct, no fluff\n🔓 No restrictions, no refusals\n\n<i>Get 20 free messages to start. Upgrade anytime for unlimited access.</i>`,
+          reply_markup: { inline_keyboard: [[{ text: "🚀 Open DeepSeek Chat", web_app: { url: appUrl } }]] },
+        }),
+      });
+    } catch (err) { console.error("[telegram] /start sendMessage error:", err); }
+    res.json({ ok: true });
     return;
   }
   const callback = update?.callback_query;
-  if (!callback) return;
+  if (!callback) { res.json({ ok: true }); return; }
   const data: string = callback.data ?? "";
   const messageId = callback.message?.message_id;
   const chatId = callback.message?.chat?.id;
@@ -323,7 +328,9 @@ app.post("/api/telegram/webhook", async (req, res) => {
       await answerCallback("❌ Rejected.");
       await editMessage(`❌ <b>REJECTED</b>\n\nClient: <code>${clientId.slice(0, 12)}…</code>`);
     }
-  } catch (err) { console.error("Telegram webhook error:", err); }
+  } catch (err) { console.error("[telegram] webhook callback error:", err); }
+  // FIX: always respond AFTER all awaits complete
+  res.json({ ok: true });
 });
 
 app.get("/api/telegram/setup", async (req, res) => {
@@ -380,7 +387,8 @@ app.delete("/api/conversations/:id", async (req, res) => {
 
 app.post("/api/conversations/:id/messages", async (req, res) => {
   const convId = Number(req.params.id);
-  const { content, model } = req.body;
+  // FIX: also accept imageBase64 and userPrompt from frontend
+  const { content, model, userPrompt, imageBase64 } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
   if (!content) { res.status(400).json({ error: "content required" }); return; }
   const selectedModel: AllowedModel = ALLOWED_MODELS.includes(model as AllowedModel) ? model : "deepseek/deepseek-v4-flash";
@@ -409,12 +417,31 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) { res.write(`data: ${JSON.stringify({ error: "OPENROUTER_API_KEY not set" })}\n\n`); res.end(); return; }
+
+    // FIX: if image attached, build multimodal content for the last (current) user message
+    const openRouterMessages = history.map((m, idx) => {
+      if (idx === history.length - 1 && m.role === "user" && imageBase64) {
+        return {
+          role: "user" as const,
+          content: [
+            { type: "image_url", image_url: { url: imageBase64 } },
+            { type: "text", text: m.content },
+          ],
+        };
+      }
+      return { role: m.role as "user" | "assistant", content: m.content };
+    });
+
+    const systemContent = userPrompt
+      ? `${LANGUAGE_ENFORCEMENT}\n\n${DEFAULT_SYSTEM_PROMPT}\n\nUSER CUSTOM INSTRUCTIONS:\n${userPrompt}`
+      : `${LANGUAGE_ENFORCEMENT}\n\n${DEFAULT_SYSTEM_PROMPT}`;
+
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
-        "HTTP-Referer": process.env.APP_URL || "https://deepseek-chat.vercel.app",
+        "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
         "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
@@ -423,11 +450,11 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         temperature: 1.0,
         stream: true,
         messages: [
-          { role: "system", content: `${LANGUAGE_ENFORCEMENT}\n\n${DEFAULT_SYSTEM_PROMPT}` },
+          { role: "system", content: systemContent },
           { role: "assistant", content: PERSONA_PREFILL },
           { role: "user", content: ENGLISH_LOCK_USER },
           { role: "assistant", content: ENGLISH_LOCK_ASSISTANT },
-          ...history.map(m => ({ role: m.role, content: m.content })),
+          ...openRouterMessages,
         ],
       }),
     });
@@ -468,13 +495,14 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   }
 });
 
-// ── Image generation (OpenRouter — Flux) ─────────────────────────────────────
+// FIX: OpenRouter Flux via /v1/chat/completions with modalities:["image"]
+// FIX: accepts imageBase64 for image-to-image editing
 app.post("/api/generate-image", async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, imageBase64 } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
 
-  if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
-    res.status(400).json({ error: "prompt required" });
+  if ((!prompt || !prompt.trim()) && !imageBase64) {
+    res.status(400).json({ error: "prompt or image required" });
     return;
   }
 
@@ -500,6 +528,16 @@ app.post("/api/generate-image", async (req, res) => {
       return;
     }
 
+    // FIX: build multimodal content when an input image is attached
+    const textContent = (prompt || "Edit this image").trim();
+    const messageContent: unknown = imageBase64
+      ? [
+          { type: "image_url", image_url: { url: imageBase64 } },
+          { type: "text", text: textContent },
+        ]
+      : textContent;
+
+    // FIX: correct endpoint + modalities:["image"] + correct model slug (dot not hyphen)
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -511,15 +549,13 @@ app.post("/api/generate-image", async (req, res) => {
       body: JSON.stringify({
         model: "black-forest-labs/flux.2-klein-4b",
         modalities: ["image"],
-        messages: [
-          { role: "user", content: prompt.trim() },
-        ],
+        messages: [{ role: "user", content: messageContent }],
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("[image] OpenRouter request failed", response.status, errText);
+      console.error("[image] OpenRouter error", response.status, errText);
       res.status(502).json({ error: `Image generation failed: HTTP ${response.status}` });
       return;
     }
@@ -528,20 +564,21 @@ app.post("/api/generate-image", async (req, res) => {
     try {
       data = await response.json();
     } catch (parseErr) {
-      console.error("[image] Failed to parse OpenRouter response as JSON", parseErr);
+      console.error("[image] Failed to parse OpenRouter response", parseErr);
       res.status(502).json({ error: "Invalid response from generation API" });
       return;
     }
 
     console.log("[image] OpenRouter raw response:", JSON.stringify(data, null, 2));
 
+    // FIX: correct response path — choices[0].message.images[0].image_url.url
     const choice = data?.choices?.[0];
     const message = choice?.message;
     const images: Array<{ type: string; image_url?: { url: string }; url?: string }> | undefined = message?.images;
     const imageUrl: string = images?.[0]?.image_url?.url ?? images?.[0]?.url ?? "";
 
     if (!imageUrl) {
-      console.error("[image] No image URL found. Diagnostics:", JSON.stringify({
+      console.error("[image] No image URL in response. Diagnostics:", JSON.stringify({
         finishReason: choice?.finish_reason,
         messageKeys: message ? Object.keys(message) : null,
         imagesValue: images,
