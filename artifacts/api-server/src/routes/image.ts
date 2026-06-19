@@ -33,7 +33,7 @@ router.post("/generate-image", async (req, res) => {
       return;
     }
 
-    const response = await fetch("https://openrouter.ai/api/v1/images/generations", {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -43,33 +43,50 @@ router.post("/generate-image", async (req, res) => {
       },
       body: JSON.stringify({
         model: "black-forest-labs/flux.2-klein-4b",
-        prompt: prompt.trim(),
-        n: 1,
-        size: "1024x1024",
+        modalities: ["image"],
+        messages: [
+          { role: "user", content: prompt.trim() },
+        ],
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("OpenRouter image generation failed", response.status, errText);
+      console.error("[image] OpenRouter request failed", response.status, errText);
       res.status(502).json({ error: `Image generation failed: HTTP ${response.status}` });
       return;
     }
 
-    const data = await response.json() as any;
+    let data: any;
+    try {
+      data = await response.json();
+    } catch (parseErr) {
+      console.error("[image] Failed to parse OpenRouter response as JSON", parseErr);
+      res.status(502).json({ error: "Invalid response from generation API" });
+      return;
+    }
 
-    const item = data?.data?.[0];
-    const imageUrl: string = item?.url ?? (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : "");
+    console.log("[image] OpenRouter raw response:", JSON.stringify(data, null, 2));
+
+    const choice = data?.choices?.[0];
+    const message = choice?.message;
+    const images: Array<{ url: string }> | undefined = message?.images;
+    const imageUrl: string = images?.[0]?.url ?? "";
 
     if (!imageUrl) {
-      console.error("No image URL in OpenRouter response", data);
+      console.error("[image] No image URL found. Diagnostics:", JSON.stringify({
+        finishReason: choice?.finish_reason,
+        messageKeys: message ? Object.keys(message) : null,
+        imagesValue: images,
+        content: message?.content,
+      }, null, 2));
       res.status(502).json({ error: "No image returned from generation API" });
       return;
     }
 
     res.json({ imageUrl });
   } catch (err: any) {
-    console.error("Image generation error", err);
+    console.error("[image] Image generation error", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
