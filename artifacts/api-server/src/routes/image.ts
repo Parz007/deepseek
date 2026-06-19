@@ -13,7 +13,6 @@ router.post("/generate-image", async (req, res) => {
   }
 
   try {
-    // Subscription / limit check (same as chat messages)
     if (clientId) {
       const sub = await getOrCreateSubscription(clientId);
       const isActive =
@@ -34,7 +33,7 @@ router.post("/generate-image", async (req, res) => {
       return;
     }
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetch("https://openrouter.ai/api/v1/images/generations", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -43,8 +42,10 @@ router.post("/generate-image", async (req, res) => {
         "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
-        model: "black-forest-labs/flux.2-klein-4b",
-        messages: [{ role: "user", content: prompt.trim() }],
+        model: "black-forest-labs/flux-1-schnell",
+        prompt: prompt.trim(),
+        n: 1,
+        size: "1024x1024",
       }),
     });
 
@@ -57,20 +58,9 @@ router.post("/generate-image", async (req, res) => {
 
     const data = await response.json() as any;
 
-    // OpenRouter image models return image URL or base64 in content
-    const rawContent = data.choices?.[0]?.message?.content;
-    let imageUrl = "";
-
-    if (typeof rawContent === "string") {
-      imageUrl = rawContent.trim();
-    } else if (Array.isArray(rawContent)) {
-      const imgPart = rawContent.find((p: any) => p.type === "image_url");
-      imageUrl = imgPart?.image_url?.url ?? "";
-      if (!imageUrl) {
-        const textPart = rawContent.find((p: any) => p.type === "text");
-        imageUrl = textPart?.text?.trim() ?? "";
-      }
-    }
+    // OpenRouter images/generations response: { data: [{ url: string } | { b64_json: string }] }
+    const item = data?.data?.[0];
+    const imageUrl: string = item?.url ?? (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : "");
 
     if (!imageUrl) {
       req.log.error({ data }, "No image URL in OpenRouter response");
