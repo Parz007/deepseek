@@ -550,7 +550,7 @@ app.post("/api/generate-image", async (req, res) => {
         "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
-        model: "black-forest-labs/flux.2-klein-4b",
+        model: "black-forest-labs/flux-1-schnell",
         prompt: prompt.trim(),
         n: 1,
         size: "1024x1024",
