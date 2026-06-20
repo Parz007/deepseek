@@ -477,12 +477,17 @@ export default function Chat() {
         {isStreaming && !streamingText && optimisticUser && (
           <div className="flex items-start gap-2.5">
             <AIAvatar />
-            <div className="px-4 py-3 rounded-2xl rounded-bl-md flex items-center gap-1.5"
+            <div className="px-4 py-3 rounded-2xl rounded-bl-md flex items-center gap-2"
               style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
               {[0, 0.15, 0.3].map((delay, i) => (
                 <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
                   style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
               ))}
+              {optimisticImage && (
+                <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  Analyzing image…
+                </span>
+              )}
             </div>
           </div>
         )}
