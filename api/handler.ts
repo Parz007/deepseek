@@ -82,14 +82,19 @@ const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
 
 async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
   const result = await db
     .select({ count: sql<number>`cast(count(*) as int)` })
     .from(messagesTable)
     .innerJoin(conversationsTable, eq(messagesTable.conversationId, conversationsTable.id))
-    .where(and(eq(conversationsTable.clientId, clientId), eq(messagesTable.role, "user")));
+    .where(and(
+      eq(conversationsTable.clientId, clientId),
+      eq(messagesTable.role, "user"),
+      gte(messagesTable.createdAt, todayStart)
+    ));
   return result[0]?.count ?? 0;
 }
-
 async function getOrCreateSubscription(db: ReturnType<typeof getDb>, clientId: string) {
   const [existing] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.clientId, clientId));
   if (existing) return existing;
