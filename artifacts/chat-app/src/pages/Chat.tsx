@@ -219,6 +219,7 @@ export default function Chat() {
   const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
   const [claimSubmitted, setClaimSubmitted] = useState(false);
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [optimisticImage, setOptimisticImage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -289,7 +290,7 @@ export default function Chat() {
 
     const userMessage = trimmed;
     const capturedImage = attachedImage;
-    setInput(""); setAttachedImage(null); setIsStreaming(true); setStreamingText("");
+    setInput(""); setAttachedImage(null); setOptimisticImage(capturedImage); setIsStreaming(true); setStreamingText("");
 
     if (isImageModel(model)) {
       setOptimisticUser(userMessage);
@@ -313,7 +314,7 @@ export default function Chat() {
         fetchSubStatus();
       } catch {
         setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true }]);
-      } finally { setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); }
+      } finally { setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); setOptimisticImage(null); }
       return;
     }
 
@@ -321,7 +322,6 @@ export default function Chat() {
     let targetId = convId;
     try {
       if (isNew) {
-        // FIX: use fallback title when only an image is sent with no text
         const t = (userMessage.slice(0, 45) || "📷 Image") + (userMessage.length > 45 ? "…" : "");
         const result = await createConversation.mutateAsync({ data: { title: t }, headers: { "X-Client-ID": clientId } } as any);
         targetId = result.id;
@@ -376,7 +376,7 @@ export default function Chat() {
       if (e.name !== "AbortError") {
         setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true }]);
       }
-    } finally { setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); }
+    } finally { setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); setOptimisticImage(null); }
   }, [input, attachedImage, isStreaming, isLimited, convId, isNew, createConversation, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
 
   const canSend = (input.trim().length > 0 || !!attachedImage) && !isStreaming;
@@ -502,7 +502,7 @@ export default function Chat() {
         {messages.map(msg => (
           <MessageBubble key={msg.id} role={msg.role} content={msg.content} error={msg.error} imageUrl={msg.imageUrl} attachedImageUrl={msg.attachedImageUrl} />
         ))}
-        {optimisticUser && <MessageBubble role="user" content={optimisticUser} attachedImageUrl={attachedImage || undefined} />}
+        {optimisticUser && <MessageBubble role="user" content={optimisticUser} attachedImageUrl={optimisticImage || undefined} />}
 
         {isStreaming && !streamingText && optimisticUser && !fluxMode && (
           <div className="flex items-start gap-2.5">
