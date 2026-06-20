@@ -352,8 +352,15 @@ app.post("/api/telegram/webhook", async (req, res) => {
 
 app.get("/api/telegram/setup", async (req, res) => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const appUrl = process.env.APP_URL;
-  if (!token || !appUrl) { res.status(400).json({ error: "TELEGRAM_BOT_TOKEN and APP_URL must be set" }); return; }
+  const appUrl =
+    process.env.APP_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : null) ||
+    (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : null);
+  if (!token || !appUrl) { res.status(400).json({ error: "TELEGRAM_BOT_TOKEN must be set, and app must be deployed to Vercel" }); return; }
   const webhookUrl = `${appUrl}/api/telegram/webhook`;
   const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
     method: "POST", headers: { "Content-Type": "application/json" },
