@@ -17,6 +17,7 @@ const messagesTable = pgTable("messages", {
   conversationId: integer("conversation_id").notNull().references(() => conversationsTable.id, { onDelete: "cascade" }),
   role: text("role").notNull(),
   content: text("content").notNull(),
+  attachedImage: text("attached_image"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -62,8 +63,10 @@ async function ensureTables() {
         conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        attached_image TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS attached_image TEXT;
       CREATE TABLE IF NOT EXISTS subscriptions (
         id SERIAL PRIMARY KEY,
         client_id TEXT NOT NULL UNIQUE,
@@ -492,7 +495,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
 
-    await db.insert(messagesTable).values({ conversationId: convId, role: "user", content: messageContent });
+    await db.insert(messagesTable).values({ conversationId: convId, role: "user", content: messageContent, attachedImage: imageBase64 || null });
 
     const allHistory = await db.select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable).where(eq(messagesTable.conversationId, convId)).orderBy(asc(messagesTable.createdAt));
