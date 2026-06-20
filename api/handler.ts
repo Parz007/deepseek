@@ -422,10 +422,11 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   const selectedModel: AllowedModel = ALLOWED_MODELS.includes(model as AllowedModel) ? model : "deepseek/deepseek-v4-flash";
   try {
     const db = getDb();
+    let isUserActive = false;
     if (clientId) {
       const sub = await getOrCreateSubscription(db, clientId);
-      const isActive = sub.status === "active" && (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
-      if (!isActive) {
+      isUserActive = sub.status === "active" && (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
+      if (!isUserActive) {
         const msgCount = await getMessageCount(db, clientId);
         if (msgCount >= FREE_LIMIT) {
           res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
@@ -433,6 +434,8 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         }
       }
     }
+    // Free users are always served flash regardless of what the frontend sends
+    const effectiveModel: AllowedModel = isUserActive ? selectedModel : "deepseek/deepseek-v4-flash";
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
     await db.insert(messagesTable).values({ conversationId: convId, role: "user", content });
