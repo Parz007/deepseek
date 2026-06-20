@@ -80,6 +80,7 @@ const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
+const VISION_MODEL = "google/gemma-4-27b-it:free";
 
 async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
   const todayStart = new Date();
@@ -95,6 +96,7 @@ async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
     ));
   return result[0]?.count ?? 0;
 }
+
 async function getOrCreateSubscription(db: ReturnType<typeof getDb>, clientId: string) {
   const [existing] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.clientId, clientId));
   if (existing) return existing;
@@ -277,10 +279,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
 
   const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
 
-  // Auto-detect the frontend Mini App URL from Vercel's injected env vars.
-  // VERCEL_PROJECT_PRODUCTION_URL = stable production domain (no https:// prefix)
-  // VERCEL_URL = this specific deployment's URL (no https:// prefix)
-  // MINIAPP_URL = manual override if you want a completely different frontend domain
   const miniAppUrl =
     process.env.MINIAPP_URL ||
     (process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -434,29 +432,66 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         }
       }
     }
+
     // Free users are always served flash regardless of what the frontend sends
     const effectiveModel: AllowedModel = isUserActive ? selectedModel : "deepseek/deepseek-v4-flash";
+
+    // If image attached: call vision model first to extract a text description,
+    // then inject that into DeepSeek as context (DeepSeek is text-only)
+    let imageContext = "";
+    if (imageBase64) {
+      try {
+        const apiKey = process.env.OPENROUTER_API_KEY;
+        const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": process.env.VERCEL_PROJECT_PRODUCTION_URL
+              ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+              : "https://deepseek-uncensored-api-server.vercel.app",
+            "X-Title": "DeepSeek Chat",
+          },
+          body: JSON.stringify({
+            model: VISION_MODEL,
+            max_tokens: 1000,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: imageBase64 } },
+                { type: "text", text: "Describe this image in full detail. Transcribe all visible text exactly as it appears. Describe all objects, people, colors, layout, numbers, charts, diagrams, or any other observable information." },
+              ],
+            }],
+          }),
+        });
+        if (visionRes.ok) {
+          const visionData = await visionRes.json() as any;
+          imageContext = visionData.choices?.[0]?.message?.content || "";
+        }
+      } catch { /* proceed without image context if vision call fails */ }
+    }
+
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
     await db.insert(messagesTable).values({ conversationId: convId, role: "user", content });
     const allHistory = await db.select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable).where(eq(messagesTable.conversationId, convId)).orderBy(asc(messagesTable.createdAt));
     const history = allHistory.slice(-30);
+
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
+
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) { res.write(`data: ${JSON.stringify({ error: "OPENROUTER_API_KEY not set" })}\n\n`); res.end(); return; }
 
+    // Build messages: inject image description as text context into the last user message
     const openRouterMessages = history.map((m, idx) => {
-      if (idx === history.length - 1 && m.role === "user" && imageBase64) {
+      if (idx === history.length - 1 && m.role === "user" && imageContext) {
         return {
           role: "user" as const,
-          content: [
-            { type: "image_url", image_url: { url: imageBase64 } },
-            { type: "text", text: m.content },
-          ],
+          content: `[The user attached an image. Here is the full image analysis from a vision model:]\n${imageContext}\n\n[User's question/message:]\n${m.content}`,
         };
       }
       return { role: m.role as "user" | "assistant", content: m.content };
@@ -475,7 +510,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
-        model: selectedModel,
+        model: effectiveModel,
         max_tokens: 32768,
         temperature: 1.0,
         stream: true,
@@ -488,12 +523,14 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         ],
       }),
     });
+
     if (!response.ok || !response.body) {
       const errText = await response.text();
       res.write(`data: ${JSON.stringify({ error: `HTTP ${response.status}: ${errText}` })}\n\n`);
       res.end();
       return;
     }
+
     let fullResponse = "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -516,6 +553,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         }
       }
     }
+
     await db.insert(messagesTable).values({ conversationId: convId, role: "assistant", content: fullResponse });
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     res.end();
