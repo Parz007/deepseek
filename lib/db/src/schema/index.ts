@@ -15,6 +15,7 @@ export const messagesTable = pgTable("messages", {
   role: text("role").notNull(),
   content: text("content").notNull(),
   attachedImage: text("attached_image"),
+  generatedImageUrl: text("generated_image_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
