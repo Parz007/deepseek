@@ -32,7 +32,6 @@ const subscriptionsTable = pgTable("subscriptions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// FIX: ssl rejectUnauthorized silences pg SSL warning
 function getDb() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
@@ -45,7 +44,6 @@ async function ensureTables() {
   if (_migrated) return;
   const url = process.env.DATABASE_URL;
   if (!url) return;
-  // FIX: ssl rejectUnauthorized silences pg SSL warning
   const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true } });
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -267,12 +265,27 @@ app.post("/api/subscription/claim", async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// FIX: res.json() moved to END — Vercel freezes function on response, killing pending awaits
 app.post("/api/telegram/webhook", async (req, res) => {
   const update = req.body;
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) { res.json({ ok: true }); return; }
+
   const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
+
+  // Auto-detect the frontend Mini App URL from Vercel's injected env vars.
+  // VERCEL_PROJECT_PRODUCTION_URL = stable production domain (no https:// prefix)
+  // VERCEL_URL = this specific deployment's URL (no https:// prefix)
+  // MINIAPP_URL = manual override if you want a completely different frontend domain
+  const miniAppUrl =
+    process.env.MINIAPP_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : null) ||
+    (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : null) ||
+    appUrl;
+
   const msg = update?.message;
   if (msg?.text?.startsWith("/start")) {
     const userChatId = msg.chat.id;
@@ -285,13 +298,18 @@ app.post("/api/telegram/webhook", async (req, res) => {
           chat_id: userChatId,
           parse_mode: "HTML",
           text: `👋 <b>Hey ${firstName}!</b>\n\nWelcome to <b>DeepSeek Uncensored</b> — the AI that actually answers your questions.\n\n🧠 Powered by DeepSeek V4\n⚡ Fast, direct, no fluff\n🔓 No restrictions, no refusals\n\n<i>Get 20 free messages to start. Upgrade anytime for unlimited access.</i>`,
-          reply_markup: { inline_keyboard: [[{ text: "🚀 Open DeepSeek Chat", web_app: { url: appUrl } }]] },
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "🚀 Open DeepSeek Chat", web_app: { url: miniAppUrl } },
+            ]],
+          },
         }),
       });
     } catch (err) { console.error("[telegram] /start sendMessage error:", err); }
     res.json({ ok: true });
     return;
   }
+
   const callback = update?.callback_query;
   if (!callback) { res.json({ ok: true }); return; }
   const data: string = callback.data ?? "";
@@ -329,7 +347,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
       await editMessage(`❌ <b>REJECTED</b>\n\nClient: <code>${clientId.slice(0, 12)}…</code>`);
     }
   } catch (err) { console.error("[telegram] webhook callback error:", err); }
-  // FIX: always respond AFTER all awaits complete
   res.json({ ok: true });
 });
 
@@ -387,7 +404,6 @@ app.delete("/api/conversations/:id", async (req, res) => {
 
 app.post("/api/conversations/:id/messages", async (req, res) => {
   const convId = Number(req.params.id);
-  // FIX: also accept imageBase64 and userPrompt from frontend
   const { content, model, userPrompt, imageBase64 } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
   if (!content) { res.status(400).json({ error: "content required" }); return; }
@@ -418,7 +434,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) { res.write(`data: ${JSON.stringify({ error: "OPENROUTER_API_KEY not set" })}\n\n`); res.end(); return; }
 
-    // FIX: if image attached, build multimodal content for the last (current) user message
     const openRouterMessages = history.map((m, idx) => {
       if (idx === history.length - 1 && m.role === "user" && imageBase64) {
         return {
@@ -495,8 +510,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   }
 });
 
-// FIX: OpenRouter Flux via /v1/chat/completions with modalities:["image"]
-// FIX: accepts imageBase64 for image-to-image editing
 app.post("/api/generate-image", async (req, res) => {
   const { prompt, imageBase64 } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
@@ -528,7 +541,6 @@ app.post("/api/generate-image", async (req, res) => {
       return;
     }
 
-    // FIX: build multimodal content when an input image is attached
     const textContent = (prompt || "Edit this image").trim();
     const messageContent: unknown = imageBase64
       ? [
@@ -537,7 +549,6 @@ app.post("/api/generate-image", async (req, res) => {
         ]
       : textContent;
 
-    // FIX: correct endpoint + modalities:["image"] + correct model slug (dot not hyphen)
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -571,7 +582,6 @@ app.post("/api/generate-image", async (req, res) => {
 
     console.log("[image] OpenRouter raw response:", JSON.stringify(data, null, 2));
 
-    // FIX: correct response path — choices[0].message.images[0].image_url.url
     const choice = data?.choices?.[0];
     const message = choice?.message;
     const images: Array<{ type: string; image_url?: { url: string }; url?: string }> | undefined = message?.images;
