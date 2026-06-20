@@ -454,9 +454,45 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     if (imageBase64) {
       try {
         const apiKey = process.env.OPENROUTER_API_KEY;
-        const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
+        if (imageBase64) {
+  try {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    const visionController = new AbortController();
+    const visionTimeout = setTimeout(() => visionController.abort(), 12000);
+    const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.VERCEL_PROJECT_PRODUCTION_URL
+          ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+          : "https://deepseek-uncensored-api-server.vercel.app",
+        "X-Title": "DeepSeek Chat",
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        max_tokens: 1000,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: imageBase64 } },
+            { type: "text", text: "Describe this image in full detail. Transcribe all visible text exactly as it appears. Describe all objects, people, colors, layout, numbers, charts, diagrams, or any other observable information." },
+          ],
+        }],
+      }),
+      signal: visionController.signal,
+    });
+    clearTimeout(visionTimeout);
+    if (visionRes.ok) {
+      const visionData = await visionRes.json() as any;
+      imageContext = visionData.choices?.[0]?.message?.content || "";
+    } else {
+      console.error("[vision] API error:", visionRes.status);
+    }
+  } catch (visionErr: any) {
+    if (visionErr?.name !== "AbortError") console.error("[vision] failed:", visionErr?.message);
+  }
+}
             "Authorization": `Bearer ${apiKey}`,
             "Content-Type": "application/json",
             "HTTP-Referer": process.env.VERCEL_PROJECT_PRODUCTION_URL
