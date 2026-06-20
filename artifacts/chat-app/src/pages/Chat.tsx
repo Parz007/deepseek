@@ -345,6 +345,7 @@ export default function Chat() {
   const isPremium = subStatus?.isActive ?? false;
   const isPending = subStatus?.status === "pending";
   const fluxMode = isImageModel(model);
+
   return (
     <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
 
@@ -397,18 +398,36 @@ export default function Chat() {
             <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[170px] rounded-xl overflow-hidden"
               style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
               onClick={e => e.stopPropagation()}>
-              {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", FLUX_MODEL] as Model[]).map(m => (
-                <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
-                  className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
-                  style={{ color: model === m ? "hsl(var(--primary))" : "hsl(var(--foreground))", background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent" }}
-                  onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
-                  onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                  <span>{MODEL_LABELS[m]}</span>
-                  {m === "deepseek/deepseek-v4-flash" && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>}
-                  {m === "deepseek/deepseek-v4-pro" && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>}
-                  {m === FLUX_MODEL && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(280 80% 60% / 0.15)", color: "hsl(280 80% 65%)" }}>Image</span>}
-                </button>
-              ))}
+              {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", FLUX_MODEL] as Model[]).map(m => {
+                const isProLocked = m === "deepseek/deepseek-v4-pro" && !isPremium && !isPending;
+                return (
+                  <button key={m} onClick={() => {
+                    if (isProLocked) { setShowModelMenu(false); openPremium(false); return; }
+                    setModel(m); setShowModelMenu(false);
+                  }}
+                    className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
+                    style={{
+                      color: model === m ? "hsl(var(--primary))" : isProLocked ? "hsl(var(--muted-foreground))" : "hsl(var(--foreground))",
+                      background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent",
+                    }}
+                    onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
+                    onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                    <span>{MODEL_LABELS[m]}</span>
+                    {m === "deepseek/deepseek-v4-flash" && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Free</span>
+                    )}
+                    {m === "deepseek/deepseek-v4-pro" && !isProLocked && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
+                    )}
+                    {m === "deepseek/deepseek-v4-pro" && isProLocked && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(45 90% 50% / 0.15)", color: "hsl(45 90% 40%)" }}>👑 Premium</span>
+                    )}
+                    {m === FLUX_MODEL && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(280 80% 60% / 0.15)", color: "hsl(280 80% 65%)" }}>Image</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -481,10 +500,10 @@ export default function Chat() {
               </div>
               <div>
                 <p className="font-semibold text-sm mb-1" style={{ color: "hsl(var(--foreground))" }}>
-                  {isPending ? "Payment under review" : "You've used your 20 free messages"}
+                  {isPending ? "Payment under review" : "You've used all 20 free messages today"}
                 </p>
                 <p className="text-xs leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
-                  {isPending ? "We're confirming your payment. You'll have unlimited access shortly." : "Upgrade to Premium for unlimited conversations with DeepSeek."}
+                  {isPending ? "We're confirming your payment. You'll have unlimited access shortly." : "Upgrade to Premium for unlimited conversations, or come back tomorrow for 20 more free messages."}
                 </p>
               </div>
               {!isPending && (
@@ -506,7 +525,7 @@ export default function Chat() {
         {!isPremium && !isLimited && msgCount >= 15 && (
           <div className="mb-3 flex items-center justify-between px-1">
             <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground))" }}>
-              {FREE_LIMIT - msgCount} free {FREE_LIMIT - msgCount === 1 ? "message" : "messages"} remaining
+              {FREE_LIMIT - msgCount} / {FREE_LIMIT} messages today
             </span>
             <button onClick={() => openPremium(false)} className="text-[11px] font-semibold" style={{ color: "hsl(var(--primary))" }}>Upgrade →</button>
           </div>
