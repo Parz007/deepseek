@@ -32,47 +32,56 @@ const subscriptionsTable = pgTable("subscriptions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+// FIX 1: Singleton pool — reused across warm invocations, prevents connection exhaustion
+let _db: ReturnType<typeof drizzle> | null = null;
 function getDb() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
-  const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true } });
-  return drizzle(pool);
+  if (!_db) {
+    const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true }, max: 3 });
+    _db = drizzle(pool);
+  }
+  return _db;
 }
 
 let _migrated = false;
+// FIX 2: Always close the migration pool even if the query throws
 async function ensureTables() {
   if (_migrated) return;
   const url = process.env.DATABASE_URL;
   if (!url) return;
   const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true } });
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      id SERIAL PRIMARY KEY,
-      title TEXT NOT NULL,
-      client_id TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-      id SERIAL PRIMARY KEY,
-      conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS subscriptions (
-      id SERIAL PRIMARY KEY,
-      client_id TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL DEFAULT 'free',
-      plan TEXT,
-      tx_hash TEXT,
-      network TEXT,
-      expires_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  await pool.end();
-  _migrated = true;
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        client_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        id SERIAL PRIMARY KEY,
+        client_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'free',
+        plan TEXT,
+        tx_hash TEXT,
+        network TEXT,
+        expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    _migrated = true;
+  } finally {
+    await pool.end();
+  }
 }
 
 const FREE_LIMIT = 20;
@@ -81,11 +90,9 @@ const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
 
-// Vision model reads images, injects description as text into DeepSeek (which is text-only)
 const VISION_MODEL = "google/gemma-4-27b-it:free";
 
 async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
-  // Daily count — resets at midnight UTC
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   const result = await db
@@ -186,7 +193,6 @@ const ALLOWED_MODELS = [
 ] as const;
 type AllowedModel = typeof ALLOWED_MODELS[number];
 
-// Free users may only use these models
 const FREE_ALLOWED_MODELS: AllowedModel[] = [
   "deepseek/deepseek-v4-flash",
   "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
@@ -296,12 +302,8 @@ app.post("/api/telegram/webhook", async (req, res) => {
   const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
   const miniAppUrl =
     process.env.MINIAPP_URL ||
-    (process.env.VERCEL_PROJECT_PRODUCTION_URL
-      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-      : null) ||
-    (process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : null) ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null) ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) ||
     appUrl;
 
   const msg = update?.message;
@@ -316,11 +318,7 @@ app.post("/api/telegram/webhook", async (req, res) => {
           chat_id: userChatId,
           parse_mode: "HTML",
           text: `👋 <b>Hey ${firstName}!</b>\n\nWelcome to <b>DeepSeek Uncensored</b> — the AI that actually answers your questions.\n\n🧠 Powered by DeepSeek V4\n⚡ Fast, direct, no fluff\n🔓 No restrictions, no refusals\n\n<i>Get 20 free messages to start. Upgrade anytime for unlimited access.</i>`,
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "🚀 Open DeepSeek Chat", web_app: { url: miniAppUrl } },
-            ]],
-          },
+          reply_markup: { inline_keyboard: [[{ text: "🚀 Open DeepSeek Chat", web_app: { url: miniAppUrl } }]] },
         }),
       });
     } catch (err) { console.error("[telegram] /start sendMessage error:", err); }
@@ -372,12 +370,8 @@ app.get("/api/telegram/setup", async (req, res) => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const appUrl =
     process.env.APP_URL ||
-    (process.env.VERCEL_PROJECT_PRODUCTION_URL
-      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-      : null) ||
-    (process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : null);
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null) ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null);
   if (!token || !appUrl) { res.status(400).json({ error: "TELEGRAM_BOT_TOKEN must be set, and app must be deployed to Vercel" }); return; }
   const webhookUrl = `${appUrl}/api/telegram/webhook`;
   const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
@@ -432,7 +426,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   const { content, model, userPrompt, imageBase64 } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
 
-  // Allow image-only messages (no text required when image is present)
   if (!content && !imageBase64) { res.status(400).json({ error: "content or image required" }); return; }
   const messageContent: string = content || "What does this image show?";
 
@@ -453,13 +446,10 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       }
     }
 
-    // Free users are restricted to free-tier models only
     const effectiveModel: AllowedModel = isUserActive
       ? selectedModel
       : (FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "deepseek/deepseek-v4-flash");
 
-    // If image attached: call vision model first to extract a text description,
-    // then inject that into DeepSeek as context (DeepSeek is text-only)
     let imageContext = "";
     if (imageBase64) {
       try {
@@ -510,7 +500,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) { res.write(`data: ${JSON.stringify({ error: "OPENROUTER_API_KEY not set" })}\n\n`); res.end(); return; }
 
-    // Build messages: inject image description as text context into the last user message
     const openRouterMessages = history.map((m, idx) => {
       if (idx === history.length - 1 && m.role === "user" && imageContext) {
         return {
@@ -657,9 +646,6 @@ app.post("/api/generate-image", async (req, res) => {
     }
 
     const message = data?.choices?.[0]?.message;
-
-    // Gemini returns image in content array: [{type:"image_url", image_url:{url:...}}]
-    // Also check legacy message.images format for compatibility
     let imageUrl = "";
 
     if (Array.isArray(message?.content)) {
