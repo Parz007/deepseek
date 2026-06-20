@@ -90,7 +90,7 @@ const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
 
-const VISION_MODEL = "sourceful/riverflow-v2.5-fast";
+const VISION_MODEL = "const VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct";
 
 async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
   const todayStart = new Date();
