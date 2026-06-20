@@ -18,6 +18,7 @@ const messagesTable = pgTable("messages", {
   role: text("role").notNull(),
   content: text("content").notNull(),
   attachedImage: text("attached_image"),
+  generatedImageUrl: text("generated_image_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -64,9 +65,11 @@ async function ensureTables() {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         attached_image TEXT,
+        generated_image_url TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE messages ADD COLUMN IF NOT EXISTS attached_image TEXT;
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS generated_image_url TEXT;
       CREATE TABLE IF NOT EXISTS subscriptions (
         id SERIAL PRIMARY KEY,
         client_id TEXT NOT NULL UNIQUE,
@@ -202,7 +205,8 @@ const FREE_ALLOWED_MODELS: AllowedModel[] = [
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
-app.use((_req, _res, next) => { ensureTables().catch(() => {}).finally(next); });
+// Run migration once at startup — NOT on every request
+ensureTables().catch(console.error);
 
 app.get("/api/admin", async (req, res) => {
   const secret = process.env.ADMIN_SECRET;
@@ -438,14 +442,15 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     const db = getDb();
     let isUserActive = false;
     if (clientId) {
-      const sub = await getOrCreateSubscription(db, clientId);
+      // Run both in parallel instead of sequentially
+      const [sub, msgCount] = await Promise.all([
+        getOrCreateSubscription(db, clientId),
+        getMessageCount(db, clientId),
+      ]);
       isUserActive = sub.status === "active" && (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
-      if (!isUserActive) {
-        const msgCount = await getMessageCount(db, clientId);
-        if (msgCount >= FREE_LIMIT) {
-          res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
-          return;
-        }
+      if (!isUserActive && msgCount >= FREE_LIMIT) {
+        res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
+        return;
       }
     }
 
@@ -533,7 +538,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       },
       body: JSON.stringify({
         model: effectiveModel,
-        max_tokens: 32768,
+        max_tokens: 8192,
         temperature: 1.0,
         stream: true,
         messages: [
@@ -586,7 +591,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 });
 
 app.post("/api/generate-image", async (req, res) => {
-  const { prompt, imageBase64 } = req.body;
+  const { prompt, imageBase64, conversationId: existingConvId, conversationTitle } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
 
   if ((!prompt || !prompt.trim()) && !imageBase64) {
@@ -673,7 +678,43 @@ app.post("/api/generate-image", async (req, res) => {
       return;
     }
 
-    res.json({ imageUrl });
+    // Save messages to DB so they persist across reloads
+    let savedConvId: number | null = null;
+    try {
+      const db = getDb();
+      const userPromptText = (prompt || "").trim() || "Generate image";
+      const title = conversationTitle || userPromptText.slice(0, 60) || "Image";
+
+      let convId: number;
+      if (existingConvId) {
+        convId = Number(existingConvId);
+      } else {
+        const [newConv] = await db
+          .insert(conversationsTable)
+          .values({ title, clientId: clientId || null })
+          .returning({ id: conversationsTable.id });
+        convId = newConv.id;
+      }
+
+      await db.insert(messagesTable).values({
+        conversationId: convId,
+        role: "user",
+        content: userPromptText,
+        attachedImage: imageBase64 || null,
+      });
+      await db.insert(messagesTable).values({
+        conversationId: convId,
+        role: "assistant",
+        content: userPromptText,
+        generatedImageUrl: imageUrl,
+      });
+      savedConvId = convId;
+    } catch (dbErr) {
+      console.error("[image] Failed to save messages to DB", dbErr);
+      // Non-fatal — still return the image
+    }
+
+    res.json({ imageUrl, conversationId: savedConvId });
   } catch (err: any) {
     console.error("[image] Image generation error", err);
     res.status(500).json({ error: "Internal server error" });
