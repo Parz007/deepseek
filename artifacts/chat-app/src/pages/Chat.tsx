@@ -4,7 +4,7 @@ import { useGetConversation, useCreateConversation, getListConversationsQueryKey
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
-  Image as ImageIcon, Paperclip, X, Download,
+  Paperclip, X, Download,
 } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
@@ -17,11 +17,7 @@ function getUserPrompt(): string {
   catch { return ""; }
 }
 
-const FLUX_MODEL: Model = "black-forest-labs/flux.2-klein-4b";
-
-function isImageModel(m: Model): boolean {
-  return m === FLUX_MODEL;
-}
+const QWEN_MODEL: Model = "qwen/qwen2.5-vl-72b-instruct";
 
 interface StreamMessage {
   id: string;
@@ -43,7 +39,7 @@ interface SubStatus {
 const MODEL_LABELS: Record<Model, string> = {
   "deepseek/deepseek-v4-flash": "V4 Flash",
   "deepseek/deepseek-v4-pro": "V4 Pro",
-  "black-forest-labs/flux.2-klein-4b": "Flux Image",
+  "qwen/qwen2.5-vl-72b-instruct": "Qwen 2.5 VL",
 };
 
 const FREE_LIMIT = 20;
@@ -245,7 +241,7 @@ export default function Chat() {
 
   useEffect(() => {
     if (conv?.messages) {
-      setMessages(conv.messages.map(m => ({ id: String(m.id), role: m.role as "user" | "assistant", content: m.content, attachedImageUrl: (m as any).attachedImage ?? undefined })));
+      setMessages(conv.messages.map(m => ({ id: String(m.id), role: m.role as "user" | "assistant", content: m.content, attachedImageUrl: (m as any).attachedImage ?? undefined, imageUrl: (m as any).generatedImageUrl ?? undefined })));
     }
   }, [conv]);
 
@@ -291,32 +287,6 @@ export default function Chat() {
     const userMessage = trimmed;
     const capturedImage = attachedImage;
     setInput(""); setAttachedImage(null); setOptimisticImage(capturedImage); setIsStreaming(true); setStreamingText("");
-
-    if (isImageModel(model)) {
-      setOptimisticUser(userMessage);
-      try {
-        const res = await fetch(`${apiBase}/api/generate-image`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Client-ID": clientId },
-          body: JSON.stringify({
-            prompt: userMessage || "Edit this image",
-            imageBase64: capturedImage || undefined,
-          }),
-        });
-        if (res.status === 402) { await fetchSubStatus(); openPremium(true); setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }]); return; }
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: "Generation failed" })) as any;
-          setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: err.error || "Image generation failed.", error: true }]);
-          return;
-        }
-        const { imageUrl } = await res.json() as { imageUrl: string };
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: userMessage, imageUrl }]);
-        fetchSubStatus();
-      } catch {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true }]);
-      } finally { setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); setOptimisticImage(null); }
-      return;
-    }
 
     setOptimisticUser(userMessage);
     let targetId = convId;
@@ -383,8 +353,6 @@ export default function Chat() {
   const msgCount = subStatus?.messageCount ?? 0;
   const isPremium = subStatus?.isActive ?? false;
   const isPending = subStatus?.status === "pending";
-  const fluxMode = isImageModel(model);
-
   return (
     <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
 
@@ -399,21 +367,21 @@ export default function Chat() {
         <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
             style={{
-              background: fluxMode ? "linear-gradient(135deg, hsl(280 80% 60%), hsl(320 70% 55%))" : "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))",
-              boxShadow: fluxMode ? "0 3px 12px hsl(280 80% 60% / 0.35)" : "0 3px 12px hsl(252 82% 68% / 0.35)",
+              background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))",
+              boxShadow: "0 3px 12px hsl(252 82% 68% / 0.35)",
             }}>
-            {fluxMode ? <ImageIcon size={15} className="text-white" /> : <Sparkles size={15} className="text-white" />}
+            <Sparkles size={15} className="text-white" />
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
               {isNew ? "New Chat" : conv?.title || "Chat"}
             </p>
             <div className="flex items-center gap-1.5 mt-0.5">
-              {fluxMode ? <ImageIcon size={10} style={{ color: "hsl(280 80% 65%)" }} /> : <Zap size={10} style={{ color: "hsl(var(--primary))" }} />}
+              <Zap size={10} style={{ color: "hsl(var(--primary))" }} />
               <span className="text-[11px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {fluxMode ? "Flux · Image Generation" : `DeepSeek ${MODEL_LABELS[model]}`}
+                {MODEL_LABELS[model]}
               </span>
-              {isStreaming && !fluxMode && (
+              {isStreaming && (
                 <span className="flex gap-0.5 ml-1">
                   {[0, 0.15, 0.3].map((delay, i) => (
                     <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full"
@@ -421,7 +389,6 @@ export default function Chat() {
                   ))}
                 </span>
               )}
-              {isStreaming && fluxMode && <span className="text-[10px] ml-1" style={{ color: "hsl(280 80% 65%)" }}>generating…</span>}
             </div>
           </div>
         </div>
@@ -437,8 +404,8 @@ export default function Chat() {
             <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[170px] rounded-xl overflow-hidden"
               style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
               onClick={e => e.stopPropagation()}>
-              {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", FLUX_MODEL] as Model[]).map(m => {
-                const isProLocked = m === "deepseek/deepseek-v4-pro" && !isPremium && !isPending;
+              {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] as Model[]).map(m => {
+                const isProLocked = (m === "deepseek/deepseek-v4-pro" || m === QWEN_MODEL) && !isPremium && !isPending;
                 return (
                   <button key={m} onClick={() => {
                     if (isProLocked) { setShowModelMenu(false); openPremium(false); return; }
@@ -461,8 +428,11 @@ export default function Chat() {
                     {m === "deepseek/deepseek-v4-pro" && isProLocked && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(45 90% 50% / 0.15)", color: "hsl(45 90% 40%)" }}>👑 Premium</span>
                     )}
-                    {m === FLUX_MODEL && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(280 80% 60% / 0.15)", color: "hsl(280 80% 65%)" }}>Image</span>
+                    {m === QWEN_MODEL && !isProLocked && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>
+                    )}
+                    {m === QWEN_MODEL && isProLocked && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(45 90% 50% / 0.15)", color: "hsl(45 90% 40%)" }}>👑 Premium</span>
                     )}
                   </button>
                 );
@@ -483,17 +453,17 @@ export default function Chat() {
           <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-4 pb-8">
             <div className="relative w-16 h-16 rounded-3xl flex items-center justify-center"
               style={{
-                background: fluxMode ? "linear-gradient(135deg, hsl(280 80% 60% / 0.15), hsl(320 70% 55% / 0.08))" : "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
-                border: fluxMode ? "1px solid hsl(280 80% 60% / 0.25)" : "1px solid hsl(252 82% 68% / 0.25)",
+                background: "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
+                border: "1px solid hsl(252 82% 68% / 0.25)",
               }}>
-              {fluxMode ? <ImageIcon size={26} style={{ color: "hsl(280 80% 65%)" }} /> : <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />}
+              <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />
             </div>
             <div>
               <p className="font-bold text-xl mb-2 tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
-                {fluxMode ? "Describe an image to generate" : "What's on your mind?"}
+                What's on your mind?
               </p>
               <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {fluxMode ? "Flux Image Gen · Powered by OpenRouter" : `DeepSeek ${MODEL_LABELS[model]} · Powered by OpenRouter`}
+                {MODEL_LABELS[model]} · Powered by OpenRouter
               </p>
             </div>
           </div>
@@ -504,7 +474,7 @@ export default function Chat() {
         ))}
         {optimisticUser && <MessageBubble role="user" content={optimisticUser} attachedImageUrl={optimisticImage || undefined} />}
 
-        {isStreaming && !streamingText && optimisticUser && !fluxMode && (
+        {isStreaming && !streamingText && optimisticUser && (
           <div className="flex items-start gap-2.5">
             <AIAvatar />
             <div className="px-4 py-3 rounded-2xl rounded-bl-md flex items-center gap-1.5"
@@ -517,18 +487,8 @@ export default function Chat() {
           </div>
         )}
 
-        {isStreaming && streamingText && !fluxMode && (
+        {isStreaming && streamingText && (
           <MessageBubble role="assistant" content={streamingText} streaming />
-        )}
-
-        {isStreaming && fluxMode && optimisticUser && (
-          <div className="flex items-start gap-2.5">
-            <AIAvatar flux />
-            <div className="px-4 py-3 rounded-2xl rounded-bl-md text-sm"
-              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))", color: "hsl(var(--muted-foreground))" }}>
-              Generating image…
-            </div>
-          </div>
         )}
 
         <div ref={bottomRef} />
@@ -566,7 +526,7 @@ export default function Chat() {
         ) : (
           <div className="rounded-2xl overflow-hidden transition-all"
             style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}
-            onFocusCapture={e => { e.currentTarget.style.borderColor = fluxMode ? "hsl(280 80% 60% / 0.4)" : "hsl(252 82% 68% / 0.4)"; }}
+            onFocusCapture={e => { e.currentTarget.style.borderColor = "hsl(252 82% 68% / 0.4)"; }}
             onBlurCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--card-border))"; }}>
 
             {attachedImage && (
@@ -599,7 +559,7 @@ export default function Chat() {
               <textarea ref={textareaRef} value={input} onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                 disabled={isStreaming}
-                placeholder={fluxMode ? "Describe an image to generate…" : "Message DeepSeek…"}
+                placeholder="Message AI…"
                 rows={1}
                 className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
                 style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
@@ -608,18 +568,18 @@ export default function Chat() {
               <button onClick={handleSend} disabled={!canSend}
                 className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
                 style={{
-                  background: canSend ? fluxMode ? "linear-gradient(135deg, hsl(280 80% 60%), hsl(320 70% 55%))" : "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
+                  background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
                   color: canSend ? "white" : "hsl(var(--muted-foreground))",
-                  boxShadow: canSend ? fluxMode ? "0 3px 12px hsl(280 80% 60% / 0.45)" : "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
+                  boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
                 }}>
-                {fluxMode ? <ImageIcon size={15} strokeWidth={2} /> : <Send size={15} strokeWidth={2} />}
+                <Send size={15} strokeWidth={2} />
               </button>
             </div>
           </div>
         )}
 
         <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
-          {isLimited ? "Unlimited access from $29/mo" : fluxMode ? "Flux 2 Klein · Text to image" : "Enter to send · Shift+Enter for new line"}
+          {isLimited ? "Unlimited access from $29/mo" : "Enter to send · Shift+Enter for new line"}
         </p>
       </footer>
 
@@ -636,14 +596,14 @@ export default function Chat() {
   );
 }
 
-function AIAvatar({ flux }: { flux?: boolean }) {
+function AIAvatar() {
   return (
     <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
       style={{
-        background: flux ? "linear-gradient(135deg, hsl(280 80% 60% / 0.2), hsl(320 70% 55% / 0.1))" : "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))",
-        border: flux ? "1px solid hsl(280 80% 60% / 0.2)" : "1px solid hsl(252 82% 68% / 0.2)",
+        background: "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))",
+        border: "1px solid hsl(252 82% 68% / 0.2)",
       }}>
-      {flux ? <ImageIcon size={13} style={{ color: "hsl(280 80% 65%)" }} /> : <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />}
+      <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />
     </div>
   );
 }
