@@ -338,6 +338,14 @@ export default function Chat() {
         setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }]);
         return;
       }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "Server error");
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: errText || "Server error. Please try again.", error: true },
+        ]);
+        return;
+      }
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "", full = "";
