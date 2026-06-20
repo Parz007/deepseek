@@ -179,6 +179,8 @@ components:
           type: string
         content:
           type: string
+        attachedImageUrl:
+          type: string
         createdAt:
           type: string
       required:
