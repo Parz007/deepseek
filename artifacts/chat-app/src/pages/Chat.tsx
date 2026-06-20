@@ -321,7 +321,8 @@ export default function Chat() {
     let targetId = convId;
     try {
       if (isNew) {
-        const t = userMessage.slice(0, 45) + (userMessage.length > 45 ? "…" : "");
+        // FIX: use fallback title when only an image is sent with no text
+        const t = (userMessage.slice(0, 45) || "📷 Image") + (userMessage.length > 45 ? "…" : "");
         const result = await createConversation.mutateAsync({ data: { title: t }, headers: { "X-Client-ID": clientId } } as any);
         targetId = result.id;
         queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
@@ -501,56 +502,31 @@ export default function Chat() {
         {messages.map(msg => (
           <MessageBubble key={msg.id} role={msg.role} content={msg.content} error={msg.error} imageUrl={msg.imageUrl} attachedImageUrl={msg.attachedImageUrl} />
         ))}
-
         {optimisticUser && <MessageBubble role="user" content={optimisticUser} attachedImageUrl={attachedImage || undefined} />}
 
-        {isStreaming && streamingText && <MessageBubble role="assistant" content={streamingText} streaming />}
-
         {isStreaming && !streamingText && optimisticUser && !fluxMode && (
-          <div className="flex items-end gap-2.5">
+          <div className="flex items-start gap-2.5">
             <AIAvatar />
-            <div className="px-4 py-3 rounded-2xl rounded-bl-sm" style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}>
-              <div className="flex gap-1 items-center h-4">
-                {[0, 0.18, 0.36].map((delay, i) => (
-                  <span key={i} className="typing-dot w-1.5 h-1.5 rounded-full" style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
-                ))}
-              </div>
+            <div className="px-4 py-3 rounded-2xl rounded-bl-md flex items-center gap-1.5"
+              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
+              {[0, 0.15, 0.3].map((delay, i) => (
+                <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
+                  style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
+              ))}
             </div>
           </div>
+        )}
+
+        {isStreaming && streamingText && !fluxMode && (
+          <MessageBubble role="assistant" content={streamingText} streaming />
         )}
 
         {isStreaming && fluxMode && optimisticUser && (
-          <div className="flex items-end gap-2.5">
+          <div className="flex items-start gap-2.5">
             <AIAvatar flux />
-            <div className="px-4 py-3 rounded-2xl rounded-bl-sm flex items-center gap-3" style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}>
-              <div className="w-4 h-4 rounded-full border-2 animate-spin" style={{ borderColor: "hsl(280 80% 65%)", borderTopColor: "transparent" }} />
-              <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>Generating image…</span>
-            </div>
-          </div>
-        )}
-
-        {isLimited && !isStreaming && (
-          <div className="mx-4 mb-2 rounded-2xl overflow-hidden" style={{ border: "1px solid hsl(var(--border))", background: "hsl(var(--card))" }}>
-            <div className="px-5 py-4 flex flex-col items-center text-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-                style={{ background: "linear-gradient(135deg, hsl(252 82% 68% / 0.12), hsl(198 80% 56% / 0.08))", border: "1px solid hsl(252 82% 68% / 0.2)" }}>
-                <Sparkles size={18} style={{ color: "hsl(var(--primary))" }} />
-              </div>
-              <div>
-                <p className="font-semibold text-sm mb-1" style={{ color: "hsl(var(--foreground))" }}>
-                  {isPending ? "Payment under review" : "You've used all 20 free messages today"}
-                </p>
-                <p className="text-xs leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
-                  {isPending ? "We're confirming your payment. You'll have unlimited access shortly." : "Upgrade to Premium for unlimited conversations, or come back tomorrow for 20 more free messages."}
-                </p>
-              </div>
-              {!isPending && (
-                <button onClick={() => openPremium(true)}
-                  className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.98]"
-                  style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 4px 16px hsl(252 82% 68% / 0.3)" }}>
-                  Upgrade to Premium
-                </button>
-              )}
+            <div className="px-4 py-3 rounded-2xl rounded-bl-md text-sm"
+              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))", color: "hsl(var(--muted-foreground))" }}>
+              Generating image…
             </div>
           </div>
         )}
@@ -558,10 +534,9 @@ export default function Chat() {
         <div ref={bottomRef} />
       </main>
 
-      <footer className="flex-shrink-0 px-4 pt-3 pb-6"
-        style={{ background: "hsl(var(--background))", borderTop: "1px solid hsl(var(--border))" }}>
-        {!isPremium && !isLimited && msgCount >= 15 && (
-          <div className="mb-3 flex items-center justify-between px-1">
+      <footer className="flex-shrink-0 px-4 pb-4 pt-2">
+        {!isPremium && !isPending && subStatus !== null && (
+          <div className="mb-2 flex items-center justify-between px-1">
             <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground))" }}>
               {FREE_LIMIT - msgCount} / {FREE_LIMIT} messages today
             </span>
