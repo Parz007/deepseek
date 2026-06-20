@@ -190,16 +190,12 @@ const ENGLISH_LOCK_ASSISTANT = `Confirmed and committed. Every response I produc
 const ALLOWED_MODELS = [
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
-  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-  "nousresearch/hermes-4-70b",
-  "deepseek/deepseek-r1-0528",
-  "mistralai/mistral-small-3.2-24b-instruct",
+  "qwen/qwen2.5-vl-72b-instruct",
 ] as const;
 type AllowedModel = typeof ALLOWED_MODELS[number];
 
 const FREE_ALLOWED_MODELS: AllowedModel[] = [
   "deepseek/deepseek-v4-flash",
-  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
 ];
 
 const app = express();
