@@ -106,24 +106,16 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         }} />
       ))}
 
-      {/* Glow halo */}
-      <div style={{
-        position: "absolute",
-        width: "280px", height: "280px",
-        borderRadius: "50%",
-        background: "radial-gradient(circle, rgba(0,120,255,0.16) 0%, transparent 70%)",
-        animation: isDiving ? "halo-fade 0.8s ease-in forwards" : "halo-pulse 2.8s ease-in-out infinite",
-        transition: "opacity 0.4s",
-      }} />
-
       {/* Whale */}
       <div style={{
         position: "relative",
-        width: "200px", height: "200px",
-        filter: "drop-shadow(0 6px 28px rgba(0,150,255,0.5))",
+        width: "220px", height: "220px",
         animation: isDiving
           ? "whale-dive 0.9s cubic-bezier(0.4, 0, 1, 1) forwards"
           : "whale-float 3s ease-in-out infinite",
+        // Radial mask fades the rectangular edges away — no hard box
+        WebkitMaskImage: "radial-gradient(ellipse 48% 48% at 50% 50%, black 35%, transparent 72%)",
+        maskImage: "radial-gradient(ellipse 48% 48% at 50% 50%, black 35%, transparent 72%)",
       }}>
         <img
           src={WHALE_URL}
@@ -131,20 +123,23 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
           style={{
             width: "100%",
             height: "100%",
-            objectFit: "contain",
-            // mix-blend-mode screen removes black backgrounds naturally
+            objectFit: "cover",
             mixBlendMode: "screen",
-            filter: "brightness(1.1) contrast(1.05)",
+            filter: "brightness(1.25) contrast(1.1) saturate(1.2)",
+            display: "block",
           }}
         />
-        {/* Subtle shimmer on whale */}
-        <div style={{
-          position: "absolute", inset: 0,
-          background: "linear-gradient(135deg, rgba(255,255,255,0.08) 0%, transparent 55%)",
-          pointerEvents: "none",
-          animation: "shimmer 3s ease-in-out infinite",
-        }} />
       </div>
+
+      {/* Separate circular glow so it doesn't box around the image */}
+      <div style={{
+        position: "absolute",
+        width: "180px", height: "180px",
+        borderRadius: "50%",
+        background: "radial-gradient(circle, rgba(0,160,255,0.22) 0%, transparent 70%)",
+        animation: isDiving ? "halo-fade 0.8s ease-in forwards" : "halo-pulse 2.8s ease-in-out infinite",
+        pointerEvents: "none",
+      }} />
 
       {/* Title + tagline */}
       <div style={{
