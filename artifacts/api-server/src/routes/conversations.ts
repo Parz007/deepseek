@@ -95,7 +95,14 @@ router.get("/conversations/:id", async (req, res) => {
     const msgs = await db.select().from(messagesTable).where(eq(messagesTable.conversationId, id)).orderBy(asc(messagesTable.createdAt));
     res.json({
       id: conv.id, title: conv.title, createdAt: conv.createdAt,
-      messages: msgs.map(m => ({ id: m.id, conversationId: m.conversationId, role: m.role, content: m.content, createdAt: m.createdAt }))
+      messages: msgs.map(m => ({
+        id: m.id,
+        conversationId: m.conversationId,
+        role: m.role,
+        content: m.content,
+        attachedImageUrl: m.attachedImage || undefined,
+        createdAt: m.createdAt,
+      })),
     });
   } catch (err) {
     req.log.error({ err }, "Failed to get conversation");
@@ -119,7 +126,14 @@ router.get("/conversations/:id/messages", async (req, res) => {
   const id = Number(req.params.id);
   try {
     const msgs = await db.select().from(messagesTable).where(eq(messagesTable.conversationId, id)).orderBy(asc(messagesTable.createdAt));
-    res.json(msgs.map(m => ({ id: m.id, conversationId: m.conversationId, role: m.role, content: m.content, createdAt: m.createdAt })));
+    res.json(msgs.map(m => ({
+      id: m.id,
+      conversationId: m.conversationId,
+      role: m.role,
+      content: m.content,
+      attachedImageUrl: m.attachedImage || undefined,
+      createdAt: m.createdAt,
+    })));
   } catch (err) {
     req.log.error({ err }, "Failed to list messages");
     res.status(500).json({ error: "Internal server error" });
@@ -130,7 +144,7 @@ router.post("/conversations/:id/messages", async (req, res) => {
   const convId = Number(req.params.id);
   const { content, model, userPrompt, imageBase64 } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
-  if (!content) { res.status(400).json({ error: "content required" }); return; }
+  if (!content && !imageBase64) { res.status(400).json({ error: "content or image required" }); return; }
 
   const selectedModel: AllowedModel = ALLOWED_MODELS.includes(model) ? model : "deepseek/deepseek-v4-flash";
 
@@ -152,7 +166,12 @@ router.post("/conversations/:id/messages", async (req, res) => {
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
 
-    await db.insert(messagesTable).values({ conversationId: convId, role: "user", content });
+    await db.insert(messagesTable).values({
+      conversationId: convId,
+      role: "user",
+      content: content || " ",
+      attachedImage: imageBase64 || null,
+    });
 
     const history = await db.select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable)
@@ -170,14 +189,11 @@ router.post("/conversations/:id/messages", async (req, res) => {
       return;
     }
 
-    // Original system prompt stays exactly as-is; userPrompt appended directly after
     const systemContent = `${LANGUAGE_ENFORCEMENT}\n\n${DEFAULT_SYSTEM_PROMPT}${userPrompt?.trim() ? `\n\n${userPrompt.trim()}` : ""}`;
 
-    // Build the last user message — include image if provided (vision)
     const lastUserMessage = history[history.length - 1];
     const historyExcludingLast = history.slice(0, -1);
 
-    // If an image is attached, build a vision content array for the current turn only
     const currentUserContent: unknown = imageBase64
       ? [
           { type: "text", text: lastUserMessage.content },
