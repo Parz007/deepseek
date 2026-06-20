@@ -3,7 +3,7 @@ import cors from "cors";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import { pgTable, serial, text, integer, timestamp } from "drizzle-orm/pg-core";
-import { eq, asc, desc, and, sql } from "drizzle-orm";
+import { eq, asc, desc, and, sql, gte } from "drizzle-orm";
 
 const conversationsTable = pgTable("conversations", {
   id: serial("id").primaryKey(),
