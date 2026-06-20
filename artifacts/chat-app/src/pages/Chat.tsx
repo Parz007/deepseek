@@ -4,7 +4,7 @@ import { useGetConversation, useCreateConversation, getListConversationsQueryKey
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
-  Paperclip, X, Download,
+  Paperclip, X, Download, Lock, Crown,
 } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
@@ -59,17 +59,11 @@ function compressImage(dataUrl: string, maxSizePx = 1024, quality = 0.82): Promi
     img.onload = () => {
       let { width, height } = img;
       if (width > maxSizePx || height > maxSizePx) {
-        if (width > height) {
-          height = Math.round(height * maxSizePx / width);
-          width = maxSizePx;
-        } else {
-          width = Math.round(width * maxSizePx / height);
-          height = maxSizePx;
-        }
+        if (width > height) { height = Math.round(height * maxSizePx / width); width = maxSizePx; }
+        else { width = Math.round(width * maxSizePx / height); height = maxSizePx; }
       }
       const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = width; canvas.height = height;
       const ctx = canvas.getContext("2d")!;
       ctx.drawImage(img, 0, 0, width, height);
       resolve(canvas.toDataURL("image/jpeg", quality));
@@ -192,6 +186,83 @@ function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt?: strin
   );
 }
 
+// ── Message usage bar for free users ─────────────────────────────────────────
+
+function UsageBar({ used, limit, onUpgrade }: { used: number; limit: number; onUpgrade: () => void }) {
+  const remaining = Math.max(0, limit - used);
+  const pct = Math.min(100, (used / limit) * 100);
+  const isLow = remaining <= 5;
+  const isEmpty = remaining === 0;
+
+  const barColor = isEmpty
+    ? "hsl(0 72% 51%)"
+    : isLow
+      ? "hsl(38 92% 50%)"
+      : "hsl(252 82% 68%)";
+
+  return (
+    <div className="mb-2 px-1">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[11px] font-medium" style={{ color: isEmpty ? "hsl(0 72% 51%)" : isLow ? "hsl(38 92% 50%)" : "hsl(var(--muted-foreground))" }}>
+          {isEmpty
+            ? "Daily limit reached"
+            : `${remaining} message${remaining === 1 ? "" : "s"} remaining today`}
+        </span>
+        <button onClick={onUpgrade}
+          className="text-[11px] font-semibold flex items-center gap-0.5 transition-opacity hover:opacity-75"
+          style={{ color: "hsl(var(--primary))" }}>
+          <Crown size={10} />
+          Upgrade
+        </button>
+      </div>
+      <div className="h-1 rounded-full overflow-hidden" style={{ background: "hsl(var(--border))" }}>
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${pct}%`, background: barColor }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── Limit reached — full locked input replacement ─────────────────────────────
+
+function LimitReachedBanner({ onUpgrade }: { onUpgrade: () => void }) {
+  return (
+    <div className="rounded-2xl overflow-hidden"
+      style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))" }}>
+      <div className="px-4 py-4 flex flex-col gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: "hsl(252 82% 68% / 0.12)", border: "1px solid hsl(252 82% 68% / 0.2)" }}>
+            <Lock size={14} style={{ color: "hsl(var(--primary))" }} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold leading-tight" style={{ color: "hsl(var(--foreground))" }}>
+              You've used all 20 free messages today
+            </p>
+            <p className="text-[11px] mt-0.5 leading-snug" style={{ color: "hsl(var(--muted-foreground))" }}>
+              Resets at midnight UTC · Upgrade for unlimited access
+            </p>
+          </div>
+        </div>
+        <button onClick={onUpgrade}
+          className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.98]"
+          style={{
+            background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))",
+            color: "white",
+            boxShadow: "0 4px 14px hsl(252 82% 68% / 0.35)",
+          }}>
+          <span className="flex items-center justify-center gap-1.5">
+            <Crown size={13} />
+            Get Unlimited — from $29/mo
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Chat() {
   const params = useParams<{ id: string }>();
   const [, navigate] = useLocation();
@@ -241,7 +312,13 @@ export default function Chat() {
 
   useEffect(() => {
     if (conv?.messages) {
-      setMessages(conv.messages.map(m => ({ id: String(m.id), role: m.role as "user" | "assistant", content: m.content, attachedImageUrl: (m as any).attachedImage ?? undefined, imageUrl: (m as any).generatedImageUrl ?? undefined })));
+      setMessages(conv.messages.map(m => ({
+        id: String(m.id),
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        attachedImageUrl: (m as any).attachedImage ?? undefined,
+        imageUrl: (m as any).generatedImageUrl ?? undefined,
+      })));
     }
   }, [conv]);
 
@@ -261,8 +338,19 @@ export default function Chat() {
     return () => document.removeEventListener("click", handler);
   }, [showModelMenu]);
 
-  const isLimited = subStatus !== null && !subStatus.isActive && subStatus.messageCount >= FREE_LIMIT;
+  const msgCount = subStatus?.messageCount ?? 0;
+  const isPremium = subStatus?.isActive ?? false;
+  const isPending = subStatus?.status === "pending";
+  const isLimited = subStatus !== null && !isPremium && msgCount >= FREE_LIMIT;
+
   const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
+
+  // Force flash model for free users — always reset if they somehow have pro selected
+  useEffect(() => {
+    if (!isPremium && model !== "deepseek/deepseek-v4-flash") {
+      setModel("deepseek/deepseek-v4-flash");
+    }
+  }, [isPremium, model, setModel]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -287,8 +375,8 @@ export default function Chat() {
     const userMessage = trimmed;
     const capturedImage = attachedImage;
     setInput(""); setAttachedImage(null); setOptimisticImage(capturedImage); setIsStreaming(true); setStreamingText("");
-
     setOptimisticUser(userMessage);
+
     let targetId = convId;
     try {
       if (isNew) {
@@ -297,6 +385,7 @@ export default function Chat() {
         targetId = result.id;
         queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
       }
+
       abortRef.current = new AbortController();
       const res = await fetch(`${apiBase}/api/conversations/${targetId}/messages`, {
         method: "POST",
@@ -304,8 +393,10 @@ export default function Chat() {
         body: JSON.stringify({ content: userMessage, model, userPrompt: getUserPrompt(), imageBase64: capturedImage || undefined }),
         signal: abortRef.current.signal,
       });
+
       if (res.status === 402) {
-        await fetchSubStatus(); openPremium(true);
+        await fetchSubStatus();
+        openPremium(true);
         setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }]);
         return;
       }
@@ -317,6 +408,7 @@ export default function Chat() {
         ]);
         return;
       }
+
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "", full = "";
@@ -332,30 +424,41 @@ export default function Chat() {
               const json = JSON.parse(line.slice(6));
               if (json.content) { full += json.content; setStreamingText(full); }
               if (json.error) {
-                setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: json.error, error: true }]);
+                setMessages(prev => [...prev,
+                  { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
+                  { id: (Date.now() + 1).toString(), role: "assistant", content: json.error, error: true },
+                ]);
                 return;
               }
             } catch { /* ignore */ }
           }
         }
       }
-      setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: full }]);
+
+      setMessages(prev => [...prev,
+        { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
+        { id: (Date.now() + 1).toString(), role: "assistant", content: full },
+      ]);
       fetchSubStatus();
       if (isNew && targetId) navigate(`/chat/${targetId}`, { replace: true });
     } catch (e: any) {
       if (e.name !== "AbortError") {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }, { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true }]);
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true },
+        ]);
       }
-    } finally { setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); setOptimisticImage(null); }
+    } finally {
+      setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); setOptimisticImage(null);
+    }
   }, [input, attachedImage, isStreaming, isLimited, convId, isNew, createConversation, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
 
-  const canSend = (input.trim().length > 0 || !!attachedImage) && !isStreaming;
-  const msgCount = subStatus?.messageCount ?? 0;
-  const isPremium = subStatus?.isActive ?? false;
-  const isPending = subStatus?.status === "pending";
+  const canSend = (input.trim().length > 0 || !!attachedImage) && !isStreaming && !isLimited;
+
   return (
     <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
 
+      {/* ── Header ── */}
       <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
         style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
         <button onClick={() => navigate("/")}
@@ -393,55 +496,58 @@ export default function Chat() {
           </div>
         </div>
 
+        {/* Model selector — premium users get full dropdown, free users see static pill */}
         <div className="relative flex-shrink-0">
-          <button onClick={e => { e.stopPropagation(); setShowModelMenu(v => !v); }}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
-            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
-            {MODEL_LABELS[model]}
-            <ChevronDown size={12} style={{ color: "hsl(var(--muted-foreground))" }} />
-          </button>
-          {showModelMenu && (
-            <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[170px] rounded-xl overflow-hidden"
-              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
-              onClick={e => e.stopPropagation()}>
-              {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] as Model[]).map(m => {
-                const isProLocked = (m === "deepseek/deepseek-v4-pro" || m === QWEN_MODEL) && !isPremium && !isPending;
-                return (
-                  <button key={m} onClick={() => {
-                    if (isProLocked) { setShowModelMenu(false); openPremium(false); return; }
-                    setModel(m); setShowModelMenu(false);
-                  }}
-                    className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
-                    style={{
-                      color: model === m ? "hsl(var(--primary))" : isProLocked ? "hsl(var(--muted-foreground))" : "hsl(var(--foreground))",
-                      background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent",
-                    }}
-                    onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
-                    onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                    <span>{MODEL_LABELS[m]}</span>
-                    {m === "deepseek/deepseek-v4-flash" && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Free</span>
-                    )}
-                    {m === "deepseek/deepseek-v4-pro" && !isProLocked && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
-                    )}
-                    {m === "deepseek/deepseek-v4-pro" && isProLocked && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(45 90% 50% / 0.15)", color: "hsl(45 90% 40%)" }}>👑 Premium</span>
-                    )}
-                    {m === QWEN_MODEL && !isProLocked && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>
-                    )}
-                    {m === QWEN_MODEL && isProLocked && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(45 90% 50% / 0.15)", color: "hsl(45 90% 40%)" }}>👑 Premium</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+          {isPremium ? (
+            <>
+              <button onClick={e => { e.stopPropagation(); setShowModelMenu(v => !v); }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
+                style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
+                {MODEL_LABELS[model]}
+                <ChevronDown size={12} style={{ color: "hsl(var(--muted-foreground))" }} />
+              </button>
+              {showModelMenu && (
+                <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
+                  style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
+                  onClick={e => e.stopPropagation()}>
+                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] as Model[]).map(m => (
+                    <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
+                      className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
+                      style={{
+                        color: model === m ? "hsl(var(--primary))" : "hsl(var(--foreground))",
+                        background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent",
+                      }}
+                      onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
+                      onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                      <span>{MODEL_LABELS[m]}</span>
+                      {m === "deepseek/deepseek-v4-flash" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>
+                      )}
+                      {m === "deepseek/deepseek-v4-pro" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
+                      )}
+                      {m === QWEN_MODEL && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            /* Free users — static pill, click opens model-locked upsell */
+            <button onClick={() => openPremium(false)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
+              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
+              title="Upgrade to access more models">
+              V4 Flash
+              <Lock size={10} />
+            </button>
           )}
         </div>
       </header>
 
+      {/* ── Messages ── */}
       <main className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
         {!isNew && messages.length === 0 && !optimisticUser && (
           <div className="flex items-center justify-center h-full">
@@ -499,17 +605,11 @@ export default function Chat() {
         <div ref={bottomRef} />
       </main>
 
+      {/* ── Footer ── */}
       <footer className="flex-shrink-0 px-4 pb-4 pt-2">
-        {!isPremium && !isPending && subStatus !== null && (
-          <div className="mb-2 flex items-center justify-between px-1">
-            <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground))" }}>
-              {FREE_LIMIT - msgCount} / {FREE_LIMIT} messages today
-            </span>
-            <button onClick={() => openPremium(false)} className="text-[11px] font-semibold" style={{ color: "hsl(var(--primary))" }}>Upgrade →</button>
-          </div>
-        )}
 
-        {isPending && (
+        {/* Payment pending notice */}
+        {isPending && !isPremium && (
           <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center"
             style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}>
             <span className="text-[11px] font-medium" style={{ color: "hsl(252 82% 60%)" }}>
@@ -518,16 +618,14 @@ export default function Chat() {
           </div>
         )}
 
+        {/* Free user usage bar */}
+        {!isPremium && !isPending && subStatus !== null && (
+          <UsageBar used={msgCount} limit={FREE_LIMIT} onUpgrade={() => openPremium(false)} />
+        )}
+
+        {/* Input area or limit-reached state */}
         {isLimited ? (
-          <div className="flex items-center justify-between gap-3 rounded-2xl px-4 py-3"
-            style={{ background: "hsl(var(--muted) / 0.4)", border: "1px solid hsl(var(--border))" }}>
-            <span className="text-sm flex-1" style={{ color: "hsl(var(--muted-foreground))" }}>Upgrade to send more messages</span>
-            <button onClick={() => openPremium(true)}
-              className="flex-shrink-0 px-4 py-2 rounded-xl text-xs font-semibold transition-all active:scale-95"
-              style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 3px 10px hsl(252 82% 68% / 0.35)" }}>
-              Upgrade
-            </button>
-          </div>
+          <LimitReachedBanner onUpgrade={() => openPremium(true)} />
         ) : (
           <div className="rounded-2xl overflow-hidden transition-all"
             style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}
@@ -584,7 +682,7 @@ export default function Chat() {
         )}
 
         <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
-          {isLimited ? "Unlimited access from $29/mo" : "Enter to send · Shift+Enter for new line"}
+          {isLimited ? "Resets daily at midnight UTC" : "Enter to send · Shift+Enter for new line"}
         </p>
       </footer>
 
@@ -677,7 +775,7 @@ function MessageBubble({ role, content, streaming, error, imageUrl, attachedImag
   if (imageUrl) {
     return (
       <div className="flex items-start gap-2.5">
-        <AIAvatar flux />
+        <AIAvatar />
         <div className="flex flex-col gap-2 min-w-0 max-w-[85%]">
           <div className="rounded-2xl rounded-bl-md overflow-hidden"
             style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
