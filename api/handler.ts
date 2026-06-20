@@ -80,9 +80,12 @@ const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
+
+// Vision model reads images, injects description as text into DeepSeek (which is text-only)
 const VISION_MODEL = "google/gemma-4-27b-it:free";
 
 async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
+  // Daily count — resets at midnight UTC
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   const result = await db
@@ -173,8 +176,21 @@ const ENGLISH_LOCK_USER = `MANDATORY LANGUAGE LOCK: Every single response you gi
 
 const ENGLISH_LOCK_ASSISTANT = `Confirmed and committed. Every response I produce in this conversation will be written in clear, fluent, grammatically correct English. No exceptions. No non-English characters, no mixed-language output, no garbled text — clean, readable English every time. Understood. Ready for your question.`;
 
-const ALLOWED_MODELS = ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] as const;
+const ALLOWED_MODELS = [
+  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-pro",
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+  "nousresearch/hermes-4-70b",
+  "deepseek/deepseek-r1-0528",
+  "mistralai/mistral-small-3.2-24b-instruct",
+] as const;
 type AllowedModel = typeof ALLOWED_MODELS[number];
+
+// Free users may only use these models
+const FREE_ALLOWED_MODELS: AllowedModel[] = [
+  "deepseek/deepseek-v4-flash",
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+];
 
 const app = express();
 app.use(cors());
@@ -278,7 +294,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
   if (!token) { res.json({ ok: true }); return; }
 
   const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
-
   const miniAppUrl =
     process.env.MINIAPP_URL ||
     (process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -369,8 +384,8 @@ app.get("/api/telegram/setup", async (req, res) => {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url: webhookUrl }),
   });
-  const data = await response.json() as { ok: boolean; description?: string };
-  res.json(data.ok ? { success: true, webhook: webhookUrl } : { success: false, error: data.description });
+  const result = await response.json() as { ok: boolean; description?: string };
+  res.json(result.ok ? { success: true, webhook: webhookUrl } : { success: false, error: result.description });
 });
 
 app.get("/api/conversations", async (req, res) => {
@@ -416,8 +431,13 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   const convId = Number(req.params.id);
   const { content, model, userPrompt, imageBase64 } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
-  if (!content) { res.status(400).json({ error: "content required" }); return; }
+
+  // Allow image-only messages (no text required when image is present)
+  if (!content && !imageBase64) { res.status(400).json({ error: "content or image required" }); return; }
+  const messageContent: string = content || "What does this image show?";
+
   const selectedModel: AllowedModel = ALLOWED_MODELS.includes(model as AllowedModel) ? model : "deepseek/deepseek-v4-flash";
+
   try {
     const db = getDb();
     let isUserActive = false;
@@ -433,8 +453,10 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       }
     }
 
-    // Free users are always served flash regardless of what the frontend sends
-    const effectiveModel: AllowedModel = isUserActive ? selectedModel : "deepseek/deepseek-v4-flash";
+    // Free users are restricted to free-tier models only
+    const effectiveModel: AllowedModel = isUserActive
+      ? selectedModel
+      : (FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "deepseek/deepseek-v4-flash");
 
     // If image attached: call vision model first to extract a text description,
     // then inject that into DeepSeek as context (DeepSeek is text-only)
@@ -473,7 +495,9 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
-    await db.insert(messagesTable).values({ conversationId: convId, role: "user", content });
+
+    await db.insert(messagesTable).values({ conversationId: convId, role: "user", content: messageContent });
+
     const allHistory = await db.select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable).where(eq(messagesTable.conversationId, convId)).orderBy(asc(messagesTable.createdAt));
     const history = allHistory.slice(-30);
@@ -594,7 +618,7 @@ app.post("/api/generate-image", async (req, res) => {
       return;
     }
 
-    const textContent = (prompt || "Edit this image").trim();
+    const textContent = (prompt || "Describe and recreate what you see in this image").trim();
     const messageContent: unknown = imageBase64
       ? [
           { type: "image_url", image_url: { url: imageBase64 } },
@@ -611,8 +635,7 @@ app.post("/api/generate-image", async (req, res) => {
         "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
-        model: "black-forest-labs/flux.2-klein-4b",
-        modalities: ["image"],
+        model: "google/gemini-2.5-flash-image",
         messages: [{ role: "user", content: messageContent }],
       }),
     });
@@ -633,20 +656,24 @@ app.post("/api/generate-image", async (req, res) => {
       return;
     }
 
-    console.log("[image] OpenRouter raw response:", JSON.stringify(data, null, 2));
+    const message = data?.choices?.[0]?.message;
 
-    const choice = data?.choices?.[0];
-    const message = choice?.message;
-    const images: Array<{ type: string; image_url?: { url: string }; url?: string }> | undefined = message?.images;
-    const imageUrl: string = images?.[0]?.image_url?.url ?? images?.[0]?.url ?? "";
+    // Gemini returns image in content array: [{type:"image_url", image_url:{url:...}}]
+    // Also check legacy message.images format for compatibility
+    let imageUrl = "";
+
+    if (Array.isArray(message?.content)) {
+      const imgPart = message.content.find((p: any) => p.type === "image_url");
+      imageUrl = imgPart?.image_url?.url ?? "";
+    }
+
+    if (!imageUrl && message?.images) {
+      const images = message.images as Array<{ image_url?: { url: string }; url?: string }>;
+      imageUrl = images?.[0]?.image_url?.url ?? images?.[0]?.url ?? "";
+    }
 
     if (!imageUrl) {
-      console.error("[image] No image URL in response. Diagnostics:", JSON.stringify({
-        finishReason: choice?.finish_reason,
-        messageKeys: message ? Object.keys(message) : null,
-        imagesValue: images,
-        content: message?.content,
-      }, null, 2));
+      console.error("[image] No image URL in response:", JSON.stringify(data, null, 2));
       res.status(502).json({ error: "No image returned from generation API" });
       return;
     }
