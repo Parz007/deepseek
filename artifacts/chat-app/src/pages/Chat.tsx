@@ -245,7 +245,7 @@ export default function Chat() {
 
   useEffect(() => {
     if (conv?.messages) {
-      setMessages(conv.messages.map(m => ({ id: String(m.id), role: m.role as "user" | "assistant", content: m.content })));
+      setMessages(conv.messages.map(m => ({ id: String(m.id), role: m.role as "user" | "assistant", content: m.content, attachedImageUrl: (m as any).attachedImage ?? undefined })));
     }
   }, [conv]);
 
