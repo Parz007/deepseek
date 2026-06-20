@@ -102,11 +102,10 @@ async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
   const result = await db
     .select({ count: sql<number>`cast(count(*) as int)` })
     .from(messagesTable)
-    .innerJoin(conversationsTable, eq(messagesTable.conversationId, conversationsTable.id))
     .where(and(
-      eq(conversationsTable.clientId, clientId),
       eq(messagesTable.role, "user"),
-      gte(messagesTable.createdAt, todayStart)
+      gte(messagesTable.createdAt, todayStart),
+      sql`${messagesTable.conversationId} IN (SELECT id FROM conversations WHERE client_id = ${clientId})`
     ));
   return result[0]?.count ?? 0;
 }
