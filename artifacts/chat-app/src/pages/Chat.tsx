@@ -57,6 +57,32 @@ function getClientId(): string {
   return id;
 }
 
+function compressImage(dataUrl: string, maxSizePx = 1024, quality = 0.82): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxSizePx || height > maxSizePx) {
+        if (width > height) {
+          height = Math.round(height * maxSizePx / width);
+          width = maxSizePx;
+        } else {
+          width = Math.round(width * maxSizePx / height);
+          height = maxSizePx;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
@@ -245,7 +271,11 @@ export default function Chat() {
     const file = e.target.files?.[0];
     if (!file || !file.type.startsWith("image/")) return;
     const reader = new FileReader();
-    reader.onload = ev => setAttachedImage(ev.target?.result as string);
+    reader.onload = async (ev) => {
+      const raw = ev.target?.result as string;
+      const compressed = await compressImage(raw);
+      setAttachedImage(compressed);
+    };
     reader.readAsDataURL(file);
     e.target.value = "";
   };
