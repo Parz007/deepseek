@@ -32,7 +32,6 @@ const subscriptionsTable = pgTable("subscriptions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// FIX 1: Singleton pool — reused across warm invocations, prevents connection exhaustion
 let _db: ReturnType<typeof drizzle> | null = null;
 function getDb() {
   const url = process.env.DATABASE_URL;
@@ -45,7 +44,6 @@ function getDb() {
 }
 
 let _migrated = false;
-// FIX 2: Always close the migration pool even if the query throws
 async function ensureTables() {
   if (_migrated) return;
   const url = process.env.DATABASE_URL;
@@ -91,6 +89,7 @@ const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
 
 const VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct";
+
 async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
@@ -293,6 +292,8 @@ app.post("/api/subscription/claim", async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
+app.get("/api/telegram/webhook", (_req, res) => res.json({ ok: true }));
+
 app.post("/api/telegram/webhook", async (req, res) => {
   const update = req.body;
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -453,50 +454,14 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     if (imageBase64) {
       try {
         const apiKey = process.env.OPENROUTER_API_KEY;
-        if (imageBase64) {
-  try {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    const visionController = new AbortController();
-    const visionTimeout = setTimeout(() => visionController.abort(), 12000);
-    const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": process.env.VERCEL_PROJECT_PRODUCTION_URL
-          ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-          : "https://deepseek-uncensored-api-server.vercel.app",
-        "X-Title": "DeepSeek Chat",
-      },
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        max_tokens: 1000,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image_url", image_url: { url: imageBase64 } },
-            { type: "text", text: "Describe this image in full detail. Transcribe all visible text exactly as it appears. Describe all objects, people, colors, layout, numbers, charts, diagrams, or any other observable information." },
-          ],
-        }],
-      }),
-      signal: visionController.signal,
-    });
-    clearTimeout(visionTimeout);
-    if (visionRes.ok) {
-      const visionData = await visionRes.json() as any;
-      imageContext = visionData.choices?.[0]?.message?.content || "";
-    } else {
-      console.error("[vision] API error:", visionRes.status);
-    }
-  } catch (visionErr: any) {
-    if (visionErr?.name !== "AbortError") console.error("[vision] failed:", visionErr?.message);
-  }
-}
+        const visionController = new AbortController();
+        const visionTimeout = setTimeout(() => visionController.abort(), 15000);
+        const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
             "Authorization": `Bearer ${apiKey}`,
             "Content-Type": "application/json",
-            "HTTP-Referer": process.env.VERCEL_PROJECT_PRODUCTION_URL
-              ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-              : "https://deepseek-uncensored-api-server.vercel.app",
+            "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
             "X-Title": "DeepSeek Chat",
           },
           body: JSON.stringify({
@@ -510,12 +475,18 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
               ],
             }],
           }),
+          signal: visionController.signal,
         });
+        clearTimeout(visionTimeout);
         if (visionRes.ok) {
           const visionData = await visionRes.json() as any;
           imageContext = visionData.choices?.[0]?.message?.content || "";
+        } else {
+          console.error("[vision] API error:", visionRes.status, await visionRes.text());
         }
-      } catch { /* proceed without image context if vision call fails */ }
+      } catch (visionErr: any) {
+        if (visionErr?.name !== "AbortError") console.error("[vision] failed:", visionErr?.message);
+      }
     }
 
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
@@ -705,5 +676,7 @@ app.post("/api/generate-image", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 
 export default app;
