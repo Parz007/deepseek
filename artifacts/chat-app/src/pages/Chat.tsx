@@ -65,15 +65,6 @@ function getUserPrompt(): string {
   catch { return ""; }
 }
 
-function getClientId(): string {
-  let id = localStorage.getItem("clientId");
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem("clientId", id);
-  }
-  return id;
-}
-
 function compressImage(dataUrl: string, maxSizePx = 1024, quality = 0.82): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -461,10 +452,22 @@ export default function Chat() {
   const params = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
-  const { model, setModel } = useAppContext();
+  const { model, setModel, clientId: rawClientId, clientIdReady } = useAppContext();
+  const clientId = rawClientId ?? "";
   const isNew = !params.id || params.id === "new";
   const convId = isNew ? null : parseInt(params.id, 10);
-  const clientId = getClientId();
+
+  if (!clientIdReady) {
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        height: "100dvh", background: "hsl(230 18% 6%)", color: "hsl(220 10% 48%)",
+        fontSize: "13px", fontFamily: "Inter, system-ui, sans-serif",
+      }}>
+        Authenticating…
+      </div>
+    );
+  }
 
   const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId } });
 
