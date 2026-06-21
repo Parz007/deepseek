@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { subscriptionsTable, conversationsTable, messagesTable } from "@workspace/db";
-import { eq, and, sql, gte } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 
 const router = Router();
 
@@ -85,21 +85,6 @@ router.post("/subscription/claim", async (req, res) => {
   if (!walletMap[network]) { res.status(400).json({ error: "Invalid network" }); return; }
 
   try {
-    // FIX: Do NOT overwrite an already-active subscription back to "pending".
-    // An active subscriber re-submitting a claim would previously lose access
-    // immediately until an admin manually re-approved — this is now blocked.
-    const [existing] = await db
-      .select({ status: subscriptionsTable.status })
-      .from(subscriptionsTable)
-      .where(eq(subscriptionsTable.clientId, clientId));
-
-    if (existing?.status === "active") {
-      res.status(409).json({
-        error: "Your subscription is already active. No action needed.",
-      });
-      return;
-    }
-
     await db
       .insert(subscriptionsTable)
       .values({ clientId, status: "pending", plan, txHash, network })
