@@ -733,6 +733,7 @@ export default function Chat() {
               const evt = JSON.parse(line.slice(6)) as SseEvent;
 
               if (evt.type === "token" && evt.content) {
+                if (!fullToken) hideLoader(); // hide as soon as first word arrives
                 fullToken += evt.content;
                 setStreamingToken(fullToken);
               }
