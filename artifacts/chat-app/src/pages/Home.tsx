@@ -17,15 +17,6 @@ function formatDate(iso: string) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function getClientId(): string {
-  let id = localStorage.getItem("clientId");
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem("clientId", id);
-  }
-  return id;
-}
-
 interface SubStatus {
   status: string;
   plan: string | null;
@@ -47,7 +38,9 @@ const AVATAR_COLORS = [
 export default function Home() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
-  const { theme, toggleTheme } = useAppContext();
+  // FIX: use clientId and clientIdReady from AppContext (Telegram-verified) instead
+  // of the old local getClientId() which generated a random UUID and ignored TG auth.
+  const { theme, toggleTheme, clientId, clientIdReady } = useAppContext();
   const { data: conversations = [], isLoading } = useListConversations();
   const deleteConversation = useDeleteConversation({
     mutation: {
@@ -60,10 +53,11 @@ export default function Home() {
   const [claimSubmitted, setClaimSubmitted] = useState(false);
   const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
 
-  const clientId = getClientId();
   const apiBase = import.meta.env.VITE_API_URL || "";
 
   const fetchSubStatus = useCallback(async () => {
+    // Wait for clientId to be resolved (Telegram auth may be in progress)
+    if (!clientId) return;
     try {
       const res = await fetch(`${apiBase}/api/subscription/status`, {
         headers: { "X-Client-ID": clientId },
@@ -79,6 +73,15 @@ export default function Home() {
   useEffect(() => {
     fetchSubStatus();
   }, [fetchSubStatus]);
+
+  // Show a minimal loading state while Telegram auth resolves (usually <300 ms)
+  if (!clientIdReady) {
+    return (
+      <div className="flex items-center justify-center h-dvh" style={{ background: "hsl(var(--background))" }}>
+        <div className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: "hsl(var(--primary))", borderTopColor: "transparent" }} />
+      </div>
+    );
+  }
 
   const isPremium = subStatus?.isActive ?? false;
   const isPending = subStatus?.status === "pending";
@@ -385,7 +388,7 @@ export default function Home() {
         )}
       </main>
 
-      {showPremium && (
+      {showPremium && clientId && (
         <PremiumModal
           clientId={clientId}
           onClose={() => { setShowPremium(false); fetchSubStatus(); }}
