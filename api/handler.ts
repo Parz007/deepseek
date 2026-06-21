@@ -1117,11 +1117,11 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         const displayText = TOOL_DISPLAY[toolName]?.(args) || `⚙️ Running ${toolName}`;
 
         // Emit status BEFORE executing — client shows animated indicator immediately
-        sseStatus(res, displayText, false);
+        res.write(`data: ${JSON.stringify({ type: "tool_status", tool: toolName, label: displayText })}\n\n`);
         const toolResult = await executeTool(toolName, args);
         toolMessages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
         // Mark step as done — client shows checkmark
-        sseStatus(res, displayText, true);
+        res.write(`data: ${JSON.stringify({ type: "tool_done" })}\n\n`);
       }
     }
 
