@@ -944,7 +944,7 @@ export default function Chat() {
           />
         ))}
 
-        {optimisticUser && (
+        {(optimisticUser || optimisticImages.length > 0) && (
           <MessageBubble
             role="user"
             content={optimisticUser}
@@ -953,7 +953,7 @@ export default function Chat() {
         )}
 
         {/* Streaming assistant bubble */}
-        {isStreaming && (streamingSteps.length > 0 || streamingThinking || streamingToken || optimisticUser) && (
+        {isStreaming && (streamingSteps.length > 0 || streamingThinking || streamingToken || optimisticUser || optimisticImages.length > 0) && (
           <div className="flex items-start gap-2.5">
             <AIAvatar />
             <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
@@ -1059,16 +1059,16 @@ export default function Chat() {
 
               <button
                 onClick={() => { setImageError(null); fileInputRef.current?.click(); }}
-                disabled={isStreaming || attachedImages.length >= MAX_IMAGES}
-                title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : "Attach image"}
+                disabled={isStreaming || imagesLoading || attachedImages.length >= MAX_IMAGES}
+                title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : imagesLoading ? "Processing image…" : "Attach image"}
                 className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
                 style={{
-                  background: attachedImages.length > 0 ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
-                  border: `1px solid ${attachedImages.length > 0 ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
-                  color: attachedImages.length >= MAX_IMAGES ? "hsl(var(--muted-foreground) / 0.4)" : attachedImages.length > 0 ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
-                  cursor: attachedImages.length >= MAX_IMAGES ? "not-allowed" : "pointer",
+                  background: imagesLoading ? "hsl(var(--primary) / 0.08)" : attachedImages.length > 0 ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
+                  border: `1px solid ${imagesLoading ? "hsl(var(--primary) / 0.25)" : attachedImages.length > 0 ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
+                  color: attachedImages.length >= MAX_IMAGES ? "hsl(var(--muted-foreground) / 0.4)" : imagesLoading ? "hsl(var(--primary))" : attachedImages.length > 0 ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
+                  cursor: (attachedImages.length >= MAX_IMAGES || imagesLoading) ? "not-allowed" : "pointer",
                 }}>
-                <Paperclip size={14} />
+                {imagesLoading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
               </button>
 
               <textarea
