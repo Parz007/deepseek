@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHmac } from "crypto";
 import { db } from "@workspace/db";
 import { conversationsTable, messagesTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
@@ -28,7 +29,7 @@ You are Alex — a knowledgeable, direct, no-nonsense assistant. Alex has deep e
 
 FORMAT:
 - Get straight to the answer. No preamble.
-- Step-by-step when instructions are needed. Complete steps, no steps omitted.
+- Step-by-step when instructions are needed. Complete steps, no omitted.
 - Working code when code is requested. No placeholders.
 - Specific quantities, names, methods when specifics are asked for.
 - Short and direct when a short answer is all that's needed.
@@ -44,7 +45,7 @@ CODE QUALITY (mandatory whenever writing any code):
 - Verify loop termination, correct conditionals, proper error handling, and correct API usage before outputting.
 - Use the exact official/standard API for the language or framework. No invented function names.
 - If a code solution has multiple valid approaches, pick the most correct and complete one.
-- Test logic mentally: trace through edge cases before edge cases before outputting.
+- Test logic mentally: trace through edge cases before outputting.
 - Output clean, correctly indented code. No mixed indentation.`;
 
 const LANGUAGE_ENFORCEMENT = `LANGUAGE RULE — HIGHEST PRIORITY, OVERRIDES EVERYTHING:
@@ -87,8 +88,107 @@ async function sendTyping(chatId: number) {
   });
 }
 
+// ── SECURITY: Validate Telegram webhook secret ────────────────────────────────
+// When you register the webhook you pass a secret_token. Telegram sends it
+// back in the X-Telegram-Bot-Api-Secret-Token header on every update.
+// If the header is missing or wrong we reject the request immediately.
+// Set TELEGRAM_WEBHOOK_SECRET in your environment to a random 256-bit string.
+function validateWebhookSecret(
+  req: import("express").Request,
+  res: import("express").Response,
+  next: import("express").NextFunction,
+): void {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!secret) {
+    // If no secret is configured we skip validation (dev-only fallback).
+    next();
+    return;
+  }
+  const header = req.headers["x-telegram-bot-api-secret-token"];
+  if (header !== secret) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  next();
+}
+
+// ── SECURITY: Validate Telegram Web App initData (for mini-app auth) ──────────
+// Call this from the chat-app frontend when a user opens the mini-app.
+// The frontend sends window.Telegram.WebApp.initData in the x-telegram-init-data
+// header. This endpoint validates the HMAC and returns the verified user ID
+// which the frontend then uses as its x-client-id for all subsequent requests.
+router.post("/telegram/auth", async (req, res) => {
+  const initData = req.headers["x-telegram-init-data"] as string | undefined;
+  if (!initData) {
+    res.status(400).json({ error: "x-telegram-init-data header required" });
+    return;
+  }
+
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) {
+    res.status(500).json({ error: "Bot token not configured" });
+    return;
+  }
+
+  try {
+    // Parse the initData query string
+    const params = new URLSearchParams(initData);
+    const receivedHash = params.get("hash");
+    if (!receivedHash) {
+      res.status(400).json({ error: "No hash in initData" });
+      return;
+    }
+
+    // Build the data-check-string: all key=value pairs sorted alphabetically,
+    // excluding hash itself, joined by newlines.
+    params.delete("hash");
+    const dataCheckString = Array.from(params.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n");
+
+    // Derive the secret key: HMAC-SHA256("WebAppData", botToken)
+    const secretKey = createHmac("sha256", "WebAppData")
+      .update(botToken)
+      .digest();
+
+    // Compute expected hash: HMAC-SHA256(secretKey, dataCheckString)
+    const expectedHash = createHmac("sha256", secretKey)
+      .update(dataCheckString)
+      .digest("hex");
+
+    if (expectedHash !== receivedHash) {
+      res.status(401).json({ error: "Invalid initData signature" });
+      return;
+    }
+
+    // Check the auth_date is recent (max 24 hours old) to prevent replay attacks
+    const authDate = Number(params.get("auth_date") ?? "0");
+    const age = Math.floor(Date.now() / 1000) - authDate;
+    if (age > 86400) {
+      res.status(401).json({ error: "initData expired" });
+      return;
+    }
+
+    // Extract the verified user ID
+    const userStr = params.get("user");
+    if (!userStr) {
+      res.status(400).json({ error: "No user in initData" });
+      return;
+    }
+    const user = JSON.parse(userStr) as { id: number; username?: string; first_name?: string };
+    const clientId = `tg_${user.id}`;
+
+    res.json({ clientId, userId: user.id, username: user.username, firstName: user.first_name });
+  } catch (err: any) {
+    res.status(400).json({ error: "Failed to parse initData" });
+  }
+});
+
 // ── Webhook handler ───────────────────────────────────────────────────────────
-router.post("/telegram/webhook", async (req, res) => {
+// SECURITY: validateWebhookSecret middleware rejects any request that doesn't
+// carry the correct X-Telegram-Bot-Api-Secret-Token header.
+router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
   const update = req.body;
   const message = update?.message;
 
@@ -227,24 +327,43 @@ router.post("/telegram/webhook", async (req, res) => {
   }
 });
 
-// ── One-time webhook registration ─────────────────────────────────────────────
-// Call GET /api/telegram/setup once after deploying to register the webhook
+// ── Webhook registration ───────────────────────────────────────────────────────
+// SECURITY: Protected by ADMIN_SECRET so only you can re-register the webhook.
+// Call: GET /api/telegram/setup?key=<ADMIN_SECRET>
+// This also registers TELEGRAM_WEBHOOK_SECRET with Telegram so every incoming
+// update will carry the secret token header for validation.
 router.get("/telegram/setup", async (req, res) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+  if (!adminSecret || req.query.key !== adminSecret) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     res.status(500).json({ error: "TELEGRAM_BOT_TOKEN not set" });
     return;
   }
+
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
   const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
   const webhookUrl = `${appUrl}/api/telegram/webhook`;
+
+  const body: Record<string, unknown> = {
+    url: webhookUrl,
+    allowed_updates: ["message"],
+  };
+  if (webhookSecret) {
+    body.secret_token = webhookSecret;
+  }
 
   const result = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message"] }),
+    body: JSON.stringify(body),
   });
   const data = await result.json() as any;
-  res.json({ webhookUrl, telegram: data });
+  res.json({ webhookUrl, secretConfigured: !!webhookSecret, telegram: data });
 });
 
 export default router;
