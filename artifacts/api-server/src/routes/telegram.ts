@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { createHmac } from "crypto";
 import { db } from "@workspace/db";
-import { conversationsTable, messagesTable } from "@workspace/db";
+import { conversationsTable, messagesTable, subscriptionsTable } from "@workspace/db";
 import { eq, asc } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { FREE_LIMIT, getMessageCount, getOrCreateSubscription } from "./subscriptions";
 
 const router = Router();
@@ -88,11 +89,25 @@ async function sendTyping(chatId: number) {
   });
 }
 
+// Answer an inline keyboard callback query (must be done within 10 seconds)
+async function answerCallbackQuery(callbackQueryId: string, text: string, showAlert = false) {
+  await fetch(telegramApi("/answerCallbackQuery"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId, text, show_alert: showAlert }),
+  });
+}
+
+// Edit the text of a message (used to update the notification after approve/reject)
+async function editMessageText(chatId: number, messageId: number, text: string) {
+  await fetch(telegramApi("/editMessageText"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: "HTML" }),
+  });
+}
+
 // ── SECURITY: Validate Telegram webhook secret ────────────────────────────────
-// When you register the webhook you pass a secret_token. Telegram sends it
-// back in the X-Telegram-Bot-Api-Secret-Token header on every update.
-// If the header is missing or wrong we reject the request immediately.
-// Set TELEGRAM_WEBHOOK_SECRET in your environment to a random 256-bit string.
 function validateWebhookSecret(
   req: import("express").Request,
   res: import("express").Response,
@@ -100,7 +115,6 @@ function validateWebhookSecret(
 ): void {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (!secret) {
-    // If no secret is configured we skip validation (dev-only fallback).
     next();
     return;
   }
@@ -113,10 +127,6 @@ function validateWebhookSecret(
 }
 
 // ── SECURITY: Validate Telegram Web App initData (for mini-app auth) ──────────
-// Call this from the chat-app frontend when a user opens the mini-app.
-// The frontend sends window.Telegram.WebApp.initData in the x-telegram-init-data
-// header. This endpoint validates the HMAC and returns the verified user ID
-// which the frontend then uses as its x-client-id for all subsequent requests.
 router.post("/telegram/auth", async (req, res) => {
   const initData = req.headers["x-telegram-init-data"] as string | undefined;
   if (!initData) {
@@ -131,7 +141,6 @@ router.post("/telegram/auth", async (req, res) => {
   }
 
   try {
-    // Parse the initData query string
     const params = new URLSearchParams(initData);
     const receivedHash = params.get("hash");
     if (!receivedHash) {
@@ -139,20 +148,16 @@ router.post("/telegram/auth", async (req, res) => {
       return;
     }
 
-    // Build the data-check-string: all key=value pairs sorted alphabetically,
-    // excluding hash itself, joined by newlines.
     params.delete("hash");
     const dataCheckString = Array.from(params.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`)
       .join("\n");
 
-    // Derive the secret key: HMAC-SHA256("WebAppData", botToken)
     const secretKey = createHmac("sha256", "WebAppData")
       .update(botToken)
       .digest();
 
-    // Compute expected hash: HMAC-SHA256(secretKey, dataCheckString)
     const expectedHash = createHmac("sha256", secretKey)
       .update(dataCheckString)
       .digest("hex");
@@ -162,7 +167,6 @@ router.post("/telegram/auth", async (req, res) => {
       return;
     }
 
-    // Check the auth_date is recent (max 24 hours old) to prevent replay attacks
     const authDate = Number(params.get("auth_date") ?? "0");
     const age = Math.floor(Date.now() / 1000) - authDate;
     if (age > 86400) {
@@ -170,7 +174,6 @@ router.post("/telegram/auth", async (req, res) => {
       return;
     }
 
-    // Extract the verified user ID
     const userStr = params.get("user");
     if (!userStr) {
       res.status(400).json({ error: "No user in initData" });
@@ -186,15 +189,120 @@ router.post("/telegram/auth", async (req, res) => {
 });
 
 // ── Webhook handler ───────────────────────────────────────────────────────────
-// SECURITY: validateWebhookSecret middleware rejects any request that doesn't
-// carry the correct X-Telegram-Bot-Api-Secret-Token header.
 router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
   const update = req.body;
-  const message = update?.message;
 
   // Acknowledge immediately so Telegram doesn't retry
   res.status(200).json({ ok: true });
 
+  // ── Handle inline keyboard button presses (approve / reject subscription) ──
+  const callbackQuery = update?.callback_query;
+  if (callbackQuery) {
+    const cbId: string = callbackQuery.id;
+    const cbData: string = callbackQuery.data ?? "";
+    const fromChatId: number = callbackQuery.message?.chat?.id;
+    const messageId: number = callbackQuery.message?.message_id;
+
+    try {
+      if (cbData.startsWith("approve:")) {
+        // Format: approve:<plan>:<clientId>
+        const parts = cbData.split(":");
+        // clientId may contain ":" if it is a UUID (unlikely) or "tg_123456" (safe)
+        // plan is always index 1, clientId is everything from index 2 onward
+        const plan = parts[1];
+        const clientId = parts.slice(2).join(":");
+
+        if (!clientId || !plan) {
+          await answerCallbackQuery(cbId, "Invalid data.", true);
+          return;
+        }
+
+        // Compute expiry: monthly = 30 days, lifetime = no expiry
+        const expiresAt =
+          plan === "monthly"
+            ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+            : null;
+
+        await db
+          .update(subscriptionsTable)
+          .set({ status: "active", expiresAt, updatedAt: sql`now()` })
+          .where(eq(subscriptionsTable.clientId, clientId));
+
+        await answerCallbackQuery(cbId, `✅ Approved! ${plan} plan activated.`, true);
+
+        // Update the notification message to show it was approved
+        if (fromChatId && messageId) {
+          const original = callbackQuery.message?.text ?? "";
+          await editMessageText(
+            fromChatId,
+            messageId,
+            `${original}\n\n✅ <b>APPROVED</b> — ${plan} plan activated${expiresAt ? ` until ${expiresAt.toDateString()}` : " (lifetime)"}.`,
+          );
+        }
+
+        // Notify the user via their Telegram chat if clientId is a tg_ id
+        if (clientId.startsWith("tg_")) {
+          const userId = Number(clientId.replace("tg_", ""));
+          if (!isNaN(userId)) {
+            const planLabel = plan === "monthly" ? "Monthly" : "Lifetime";
+            await sendMessage(
+              userId,
+              `🎉 Your ${planLabel} Premium subscription has been approved!\n\n` +
+              `You now have unlimited access to Alex. Enjoy.`
+            );
+          }
+        }
+
+      } else if (cbData.startsWith("reject:")) {
+        // Format: reject:<clientId>
+        const clientId = cbData.slice("reject:".length);
+
+        if (!clientId) {
+          await answerCallbackQuery(cbId, "Invalid data.", true);
+          return;
+        }
+
+        await db
+          .update(subscriptionsTable)
+          .set({ status: "rejected", updatedAt: sql`now()` })
+          .where(eq(subscriptionsTable.clientId, clientId));
+
+        await answerCallbackQuery(cbId, "❌ Rejected.", true);
+
+        if (fromChatId && messageId) {
+          const original = callbackQuery.message?.text ?? "";
+          await editMessageText(
+            fromChatId,
+            messageId,
+            `${original}\n\n❌ <b>REJECTED</b> by admin.`,
+          );
+        }
+
+        // Notify the user
+        if (clientId.startsWith("tg_")) {
+          const userId = Number(clientId.replace("tg_", ""));
+          if (!isNaN(userId)) {
+            await sendMessage(
+              userId,
+              `❌ Your payment claim was rejected.\n\n` +
+              `If you believe this is an error, please submit your transaction hash again with the correct details.`
+            );
+          }
+        }
+
+      } else {
+        await answerCallbackQuery(cbId, "Unknown action.");
+      }
+    } catch (err: any) {
+      req.log.error({ err, cbData }, "Telegram callback_query handler error");
+      await answerCallbackQuery(cbId, "An error occurred. Please try again.", true);
+    }
+
+    return;
+  }
+
+  // ── Handle regular text messages ──────────────────────────────────────────
+  const message = update?.message;
   if (!message?.text) return;
 
   const chatId: number = message.chat.id;
@@ -330,8 +438,9 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
 // ── Webhook registration ───────────────────────────────────────────────────────
 // SECURITY: Protected by ADMIN_SECRET so only you can re-register the webhook.
 // Call: GET /api/telegram/setup?key=<ADMIN_SECRET>
-// This also registers TELEGRAM_WEBHOOK_SECRET with Telegram so every incoming
-// update will carry the secret token header for validation.
+// IMPORTANT: After applying this file, re-register the webhook by visiting:
+//   https://your-app.vercel.app/api/telegram/setup?key=YOUR_ADMIN_SECRET
+// This is required so Telegram sends callback_query updates (button presses).
 router.get("/telegram/setup", async (req, res) => {
   const adminSecret = process.env.ADMIN_SECRET;
   if (!adminSecret || req.query.key !== adminSecret) {
@@ -351,7 +460,9 @@ router.get("/telegram/setup", async (req, res) => {
 
   const body: Record<string, unknown> = {
     url: webhookUrl,
-    allowed_updates: ["message"],
+    // FIX: Added "callback_query" so Telegram sends button-press events.
+    // Without this, approve/reject inline keyboard buttons silently do nothing.
+    allowed_updates: ["message", "callback_query"],
   };
   if (webhookSecret) {
     body.secret_token = webhookSecret;
