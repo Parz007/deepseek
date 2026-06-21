@@ -94,6 +94,8 @@ const TOOL_STATUS_LABELS: Record<string, string> = {
 };
 
 // ── Security: require clientId ────────────────────────────────────────────────
+// Every conversation route requires x-client-id. Without it the request is
+// rejected immediately — no data is ever returned for anonymous callers.
 
 function requireClientId(
   req: import("express").Request,
@@ -105,6 +107,7 @@ function requireClientId(
     res.status(401).json({ error: "x-client-id header is required" });
     return;
   }
+  // Sanitise: max 128 chars, only safe characters
   if (clientId.length > 128 || !/^[\w\-.:@]+$/.test(clientId)) {
     res.status(400).json({ error: "Invalid x-client-id format" });
     return;
@@ -150,31 +153,6 @@ function emitToolStatus(
   res.write(
     `data: ${JSON.stringify({ type: "tool_status", tool: toolName, label, ...extra })}\n\n`,
   );
-}
-
-// ── Source card extraction ────────────────────────────────────────────────────
-
-interface SourceCard { title: string; url: string; snippet?: string; }
-
-function parseSearchSources(result: string): SourceCard[] {
-  const sources: SourceCard[] = [];
-  const blocks = result.split(/\n\n+/);
-  for (const block of blocks) {
-    const lines = block.split("\n").map((l: string) => l.trim()).filter(Boolean);
-    let title = ""; let url = ""; let snippet = "";
-    for (const line of lines) {
-      if (!title && line.startsWith("**") && line.endsWith("**")) {
-        title = line.replace(/\*\*/g, "").trim();
-      } else if (!url && /^https?:\/\/\S+/.test(line)) {
-        url = line.trim();
-      } else if (url && !snippet) {
-        snippet = line.slice(0, 200);
-      }
-    }
-    if (url) sources.push({ title: title || url, url, snippet: snippet || undefined });
-    if (sources.length >= 6) break;
-  }
-  return sources;
 }
 
 // ── CRUD routes (all protected by requireClientId) ────────────────────────────
@@ -574,30 +552,13 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
         },
       ];
 
-      // Execute tool calls and collect results with names for source extraction
-      const toolResults = await Promise.all(
+      const toolResultMsgs = await Promise.all(
         toolCalls.map(async tc => ({
+          role: "tool" as const,
           tool_call_id: tc.id,
-          name: tc.name,
           content: await executeToolCall(tc.name, tc.arguments),
         })),
       );
-
-      // Emit source cards from web_search results so frontend can display them
-      for (const tr of toolResults) {
-        if (tr.name === "web_search") {
-          const sources = parseSearchSources(tr.content);
-          if (sources.length > 0) {
-            res.write(`data: ${JSON.stringify({ type: "sources", sources })}\n\n`);
-          }
-        }
-      }
-
-      const toolResultMsgs = toolResults.map(tr => ({
-        role: "tool" as const,
-        tool_call_id: tr.tool_call_id,
-        content: tr.content,
-      }));
 
       toolMessages = [...toolMessages, ...toolResultMsgs];
     }
