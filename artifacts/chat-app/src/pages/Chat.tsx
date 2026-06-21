@@ -4,7 +4,7 @@ import { useGetConversation, useCreateConversation, getListConversationsQueryKey
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
-  Paperclip, X, Download, Lock, Crown,
+  Paperclip, X, Download, Lock, Crown, ChevronRight, Loader2,
 } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
@@ -12,17 +12,26 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
-function getUserPrompt(): string {
-  try { return localStorage.getItem("userSystemPrompt") || ""; }
-  catch { return ""; }
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface SseEvent {
+  type: "token" | "thinking" | "status" | "done" | "error";
+  content?: string;
+  text?: string;
+  done?: boolean;
+  message?: string;
 }
 
-const QWEN_MODEL: Model = "qwen/qwen2.5-vl-72b-instruct";
+interface StatusStep {
+  text: string;
+  done: boolean;
+}
 
 interface StreamMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
   error?: boolean;
   imageUrl?: string;
   attachedImageUrl?: string;
@@ -36,13 +45,25 @@ interface SubStatus {
   isActive: boolean;
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const QWEN_MODEL: Model = "qwen/qwen2.5-vl-72b-instruct";
+const FREE_LIMIT = 20;
+const MAX_IMAGES = 5;
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+
 const MODEL_LABELS: Record<Model, string> = {
   "deepseek/deepseek-v4-flash": "V4 Flash",
   "deepseek/deepseek-v4-pro": "V4 Pro",
   "qwen/qwen2.5-vl-72b-instruct": "Qwen 2.5 VL",
 };
 
-const FREE_LIMIT = 20;
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function getUserPrompt(): string {
+  try { return localStorage.getItem("userSystemPrompt") || ""; }
+  catch { return ""; }
+}
 
 function getClientId(): string {
   let id = localStorage.getItem("clientId");
@@ -54,7 +75,7 @@ function getClientId(): string {
 }
 
 function compressImage(dataUrl: string, maxSizePx = 1024, quality = 0.82): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
       let { width, height } = img;
@@ -64,14 +85,17 @@ function compressImage(dataUrl: string, maxSizePx = 1024, quality = 0.82): Promi
       }
       const canvas = document.createElement("canvas");
       canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext("2d")!;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(dataUrl); return; }
       ctx.drawImage(img, 0, 0, width, height);
       resolve(canvas.toDataURL("image/jpeg", quality));
     };
-    img.onerror = () => resolve(dataUrl);
+    img.onerror = () => reject(new Error("Failed to load image"));
     img.src = dataUrl;
   });
 }
+
+// ── Code block ────────────────────────────────────────────────────────────────
 
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
   const [copied, setCopied] = useState(false);
@@ -106,6 +130,8 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
     </div>
   );
 }
+
+// ── Markdown renderer ─────────────────────────────────────────────────────────
 
 function buildMarkdownComponents(textColor: string): Components {
   return {
@@ -158,6 +184,59 @@ function MarkdownContent({ content, streaming }: { content: string; streaming?: 
   );
 }
 
+// ── Thinking block ────────────────────────────────────────────────────────────
+
+function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (!content && !streaming) return null;
+  return (
+    <div className="mb-2 rounded-xl overflow-hidden"
+      style={{ border: "1px solid hsl(var(--border) / 0.6)", background: "hsl(var(--muted) / 0.4)" }}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
+        style={{ color: "hsl(var(--muted-foreground))" }}>
+        <span className="flex items-center gap-1.5 text-[11px] font-medium flex-1">
+          {streaming && !open
+            ? <Loader2 size={11} className="animate-spin flex-shrink-0" />
+            : <ChevronRight size={11} className="flex-shrink-0 transition-transform" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }} />}
+          {streaming ? "Thinking…" : `Reasoning trace (${content.length} chars)`}
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3">
+          <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words"
+            style={{ color: "hsl(var(--muted-foreground))", fontFamily: "var(--app-font-mono)", margin: 0 }}>
+            {content}
+            {streaming && <span className="inline-block w-0.5 h-3 ml-0.5 align-middle animate-pulse" style={{ background: "hsl(var(--muted-foreground))" }} />}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Status steps ──────────────────────────────────────────────────────────────
+
+function StatusSteps({ steps }: { steps: StatusStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <div className="mb-2 flex flex-col gap-1">
+      {steps.map((step, i) => (
+        <div key={i} className="flex items-center gap-2 text-[12px]"
+          style={{ color: step.done ? "hsl(142 62% 45%)" : "hsl(var(--muted-foreground))" }}>
+          {step.done
+            ? <Check size={12} strokeWidth={2.5} className="flex-shrink-0" />
+            : <Loader2 size={12} className="animate-spin flex-shrink-0" />}
+          <span>{step.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Download button ───────────────────────────────────────────────────────────
+
 function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt?: string }) {
   const [downloading, setDownloading] = useState(false);
   const handleDownload = async () => {
@@ -186,27 +265,19 @@ function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt?: strin
   );
 }
 
-// ── Message usage bar for free users ─────────────────────────────────────────
+// ── Usage bar ─────────────────────────────────────────────────────────────────
 
 function UsageBar({ used, limit, onUpgrade }: { used: number; limit: number; onUpgrade: () => void }) {
   const remaining = Math.max(0, limit - used);
   const pct = Math.min(100, (used / limit) * 100);
   const isLow = remaining <= 5;
   const isEmpty = remaining === 0;
-
-  const barColor = isEmpty
-    ? "hsl(0 72% 51%)"
-    : isLow
-      ? "hsl(38 92% 50%)"
-      : "hsl(252 82% 68%)";
-
+  const barColor = isEmpty ? "hsl(0 72% 51%)" : isLow ? "hsl(38 92% 50%)" : "hsl(252 82% 68%)";
   return (
     <div className="mb-2 px-1">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[11px] font-medium" style={{ color: isEmpty ? "hsl(0 72% 51%)" : isLow ? "hsl(38 92% 50%)" : "hsl(var(--muted-foreground))" }}>
-          {isEmpty
-            ? "Daily limit reached"
-            : `${remaining} message${remaining === 1 ? "" : "s"} remaining today`}
+          {isEmpty ? "Daily limit reached" : `${remaining} message${remaining === 1 ? "" : "s"} remaining today`}
         </span>
         <button onClick={onUpgrade}
           className="text-[11px] font-semibold flex items-center gap-0.5 transition-opacity hover:opacity-75"
@@ -216,16 +287,13 @@ function UsageBar({ used, limit, onUpgrade }: { used: number; limit: number; onU
         </button>
       </div>
       <div className="h-1 rounded-full overflow-hidden" style={{ background: "hsl(var(--border))" }}>
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, background: barColor }}
-        />
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: barColor }} />
       </div>
     </div>
   );
 }
 
-// ── Limit reached — full locked input replacement ─────────────────────────────
+// ── Limit reached banner ──────────────────────────────────────────────────────
 
 function LimitReachedBanner({ onUpgrade }: { onUpgrade: () => void }) {
   return (
@@ -263,441 +331,7 @@ function LimitReachedBanner({ onUpgrade }: { onUpgrade: () => void }) {
   );
 }
 
-export default function Chat() {
-  const params = useParams<{ id: string }>();
-  const [, navigate] = useLocation();
-  const queryClient = useQueryClient();
-  const { model, setModel } = useAppContext();
-  const isNew = !params.id || params.id === "new";
-  const convId = isNew ? null : parseInt(params.id, 10);
-  const clientId = getClientId();
-
-  const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId } });
-  const createConversation = useCreateConversation();
-
-  const [messages, setMessages] = useState<StreamMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [optimisticUser, setOptimisticUser] = useState("");
-  const [showModelMenu, setShowModelMenu] = useState(false);
-  const [showPremium, setShowPremium] = useState(false);
-  const [premiumTriggeredByLimit, setPremiumTriggeredByLimit] = useState(false);
-  const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
-  const [claimSubmitted, setClaimSubmitted] = useState(false);
-  const [attachedImage, setAttachedImage] = useState<string | null>(null);
-  const [optimisticImage, setOptimisticImage] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const apiBase = import.meta.env.VITE_API_URL || "";
-
-  const fetchSubStatus = useCallback(async () => {
-    try {
-      const res = await fetch(`${apiBase}/api/subscription/status`, { headers: { "X-Client-ID": clientId } });
-      if (res.ok) {
-        const data = await res.json() as SubStatus;
-        setSubStatus(data);
-        if (data.status === "pending") setClaimSubmitted(true);
-      }
-    } catch { /* ignore */ }
-  }, [clientId, apiBase]);
-
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get("premium") === "1") { setShowPremium(true); setPremiumTriggeredByLimit(false); }
-    fetchSubStatus();
-  }, [fetchSubStatus]);
-
-  useEffect(() => {
-    if (conv?.messages) {
-      setMessages(conv.messages.map(m => ({
-        id: String(m.id),
-        role: m.role as "user" | "assistant",
-        content: m.content,
-        attachedImageUrl: (m as any).attachedImage ?? undefined,
-        imageUrl: (m as any).generatedImageUrl ?? undefined,
-      })));
-    }
-  }, [conv]);
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamingText, optimisticUser]);
-
-  useEffect(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
-  }, [input]);
-
-  useEffect(() => {
-    if (!showModelMenu) return;
-    const handler = () => setShowModelMenu(false);
-    document.addEventListener("click", handler);
-    return () => document.removeEventListener("click", handler);
-  }, [showModelMenu]);
-
-  const msgCount = subStatus?.messageCount ?? 0;
-  const isPremium = subStatus?.isActive ?? false;
-  const isPending = subStatus?.status === "pending";
-  const isLimited = subStatus !== null && !isPremium && msgCount >= FREE_LIMIT;
-
-  const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
-
-  // Force flash model for free users — always reset if they somehow have pro selected
-  useEffect(() => {
-    if (!isPremium && model !== "deepseek/deepseek-v4-flash") {
-      setModel("deepseek/deepseek-v4-flash");
-    }
-  }, [isPremium, model, setModel]);
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const raw = ev.target?.result as string;
-      const compressed = await compressImage(raw);
-      setAttachedImage(compressed);
-    };
-    reader.readAsDataURL(file);
-    e.target.value = "";
-  };
-
-  const removeAttachedImage = () => setAttachedImage(null);
-
-  const handleSend = useCallback(async () => {
-    const trimmed = input.trim();
-    if ((!trimmed && !attachedImage) || isStreaming) return;
-    if (isLimited) { openPremium(true); return; }
-
-    const userMessage = trimmed;
-    const capturedImage = attachedImage;
-    setInput(""); setAttachedImage(null); setOptimisticImage(capturedImage); setIsStreaming(true); setStreamingText("");
-    setOptimisticUser(userMessage);
-
-    let targetId = convId;
-    try {
-      if (isNew) {
-        const t = (userMessage.slice(0, 45) || "📷 Image") + (userMessage.length > 45 ? "…" : "");
-        const result = await createConversation.mutateAsync({ data: { title: t }, headers: { "X-Client-ID": clientId } } as any);
-        targetId = result.id;
-        queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
-      }
-
-      abortRef.current = new AbortController();
-      const res = await fetch(`${apiBase}/api/conversations/${targetId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Client-ID": clientId },
-        body: JSON.stringify({ content: userMessage, model, userPrompt: getUserPrompt(), imageBase64: capturedImage || undefined }),
-        signal: abortRef.current.signal,
-      });
-
-      if (res.status === 402) {
-        await fetchSubStatus();
-        openPremium(true);
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined }]);
-        return;
-      }
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "Server error");
-        setMessages(prev => [...prev,
-          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
-          { id: (Date.now() + 1).toString(), role: "assistant", content: errText || "Server error. Please try again.", error: true },
-        ]);
-        return;
-      }
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "", full = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop()!;
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const json = JSON.parse(line.slice(6));
-              if (json.content) { full += json.content; setStreamingText(full); }
-              if (json.error) {
-                setMessages(prev => [...prev,
-                  { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
-                  { id: (Date.now() + 1).toString(), role: "assistant", content: json.error, error: true },
-                ]);
-                return;
-              }
-            } catch { /* ignore */ }
-          }
-        }
-      }
-
-      setMessages(prev => [...prev,
-        { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
-        { id: (Date.now() + 1).toString(), role: "assistant", content: full },
-      ]);
-      fetchSubStatus();
-      if (isNew && targetId) navigate(`/chat/${targetId}`, { replace: true });
-    } catch (e: any) {
-      if (e.name !== "AbortError") {
-        setMessages(prev => [...prev,
-          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: capturedImage || undefined },
-          { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true },
-        ]);
-      }
-    } finally {
-      setIsStreaming(false); setStreamingText(""); setOptimisticUser(""); setOptimisticImage(null);
-    }
-  }, [input, attachedImage, isStreaming, isLimited, convId, isNew, createConversation, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
-
-  const canSend = (input.trim().length > 0 || !!attachedImage) && !isStreaming && !isLimited;
-
-  return (
-    <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
-
-      {/* ── Header ── */}
-      <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
-        style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
-        <button onClick={() => navigate("/")}
-          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-          style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
-          <ArrowLeft size={17} />
-        </button>
-
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{
-              background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))",
-              boxShadow: "0 3px 12px hsl(252 82% 68% / 0.35)",
-            }}>
-            <Sparkles size={15} className="text-white" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
-              {isNew ? "New Chat" : conv?.title || "Chat"}
-            </p>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <Zap size={10} style={{ color: "hsl(var(--primary))" }} />
-              <span className="text-[11px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {MODEL_LABELS[model]}
-              </span>
-              {isStreaming && (
-                <span className="flex gap-0.5 ml-1">
-                  {[0, 0.15, 0.3].map((delay, i) => (
-                    <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full"
-                      style={{ background: "hsl(var(--primary))", animationDelay: `${delay}s` }} />
-                  ))}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Model selector — premium users get full dropdown, free users see static pill */}
-        <div className="relative flex-shrink-0">
-          {isPremium ? (
-            <>
-              <button onClick={e => { e.stopPropagation(); setShowModelMenu(v => !v); }}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
-                style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
-                {MODEL_LABELS[model]}
-                <ChevronDown size={12} style={{ color: "hsl(var(--muted-foreground))" }} />
-              </button>
-              {showModelMenu && (
-                <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
-                  style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
-                  onClick={e => e.stopPropagation()}>
-                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] as Model[]).map(m => (
-                    <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
-                      className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
-                      style={{
-                        color: model === m ? "hsl(var(--primary))" : "hsl(var(--foreground))",
-                        background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent",
-                      }}
-                      onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
-                      onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                      <span>{MODEL_LABELS[m]}</span>
-                      {m === "deepseek/deepseek-v4-flash" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>
-                      )}
-                      {m === "deepseek/deepseek-v4-pro" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
-                      )}
-                      {m === QWEN_MODEL && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : (
-            /* Free users — static pill, click opens model-locked upsell */
-            <button onClick={() => openPremium(false)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
-              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
-              title="Upgrade to access more models">
-              V4 Flash
-              <Lock size={10} />
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* ── Messages ── */}
-      <main className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
-        {!isNew && messages.length === 0 && !optimisticUser && (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>Loading…</p>
-          </div>
-        )}
-
-        {isNew && !optimisticUser && (
-          <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-4 pb-8">
-            <div className="relative w-16 h-16 rounded-3xl flex items-center justify-center"
-              style={{
-                background: "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
-                border: "1px solid hsl(252 82% 68% / 0.25)",
-              }}>
-              <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />
-            </div>
-            <div>
-              <p className="font-bold text-xl mb-2 tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
-                What's on your mind?
-              </p>
-              <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {MODEL_LABELS[model]} · Powered by OpenRouter
-              </p>
-            </div>
-          </div>
-        )}
-
-        {messages.map(msg => (
-          <MessageBubble key={msg.id} role={msg.role} content={msg.content} error={msg.error} imageUrl={msg.imageUrl} attachedImageUrl={msg.attachedImageUrl} />
-        ))}
-        {optimisticUser && <MessageBubble role="user" content={optimisticUser} attachedImageUrl={optimisticImage || undefined} />}
-
-        {isStreaming && !streamingText && optimisticUser && (
-          <div className="flex items-start gap-2.5">
-            <AIAvatar />
-            <div className="px-4 py-3 rounded-2xl rounded-bl-md flex items-center gap-2"
-              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-              {[0, 0.15, 0.3].map((delay, i) => (
-                <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
-                  style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
-              ))}
-              {optimisticImage && (
-                <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                  Analyzing image…
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-
-        {isStreaming && streamingText && (
-          <MessageBubble role="assistant" content={streamingText} streaming />
-        )}
-
-        <div ref={bottomRef} />
-      </main>
-
-      {/* ── Footer ── */}
-      <footer className="flex-shrink-0 px-4 pb-4 pt-2">
-
-        {/* Payment pending notice */}
-        {isPending && !isPremium && (
-          <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center"
-            style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}>
-            <span className="text-[11px] font-medium" style={{ color: "hsl(252 82% 60%)" }}>
-              Payment pending — unlimited access activates once confirmed
-            </span>
-          </div>
-        )}
-
-        {/* Free user usage bar */}
-        {!isPremium && !isPending && subStatus !== null && (
-          <UsageBar used={msgCount} limit={FREE_LIMIT} onUpgrade={() => openPremium(false)} />
-        )}
-
-        {/* Input area or limit-reached state */}
-        {isLimited ? (
-          <LimitReachedBanner onUpgrade={() => openPremium(true)} />
-        ) : (
-          <div className="rounded-2xl overflow-hidden transition-all"
-            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}
-            onFocusCapture={e => { e.currentTarget.style.borderColor = "hsl(252 82% 68% / 0.4)"; }}
-            onBlurCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--card-border))"; }}>
-
-            {attachedImage && (
-              <div className="px-3 pt-3 flex items-start gap-2">
-                <div className="relative">
-                  <img src={attachedImage} alt="Attached" className="w-16 h-16 rounded-lg object-cover"
-                    style={{ border: "1px solid hsl(var(--border))" }} />
-                  <button onClick={removeAttachedImage}
-                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center"
-                    style={{ background: "hsl(var(--foreground))", color: "hsl(var(--background))" }}>
-                    <X size={9} strokeWidth={3} />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-end gap-2 px-4 py-3">
-              <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileSelect} />
-
-              <button onClick={() => fileInputRef.current?.click()} disabled={isStreaming} title="Attach image"
-                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                style={{
-                  background: attachedImage ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
-                  border: `1px solid ${attachedImage ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
-                  color: attachedImage ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
-                }}>
-                <Paperclip size={14} />
-              </button>
-
-              <textarea ref={textareaRef} value={input} onChange={e => setInput(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                disabled={isStreaming}
-                placeholder="Message AI…"
-                rows={1}
-                className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
-                style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
-              />
-
-              <button onClick={handleSend} disabled={!canSend}
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                style={{
-                  background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
-                  color: canSend ? "white" : "hsl(var(--muted-foreground))",
-                  boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
-                }}>
-                <Send size={15} strokeWidth={2} />
-              </button>
-            </div>
-          </div>
-        )}
-
-        <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
-          {isLimited ? "Resets daily at midnight UTC" : "Enter to send · Shift+Enter for new line"}
-        </p>
-      </footer>
-
-      {showPremium && (
-        <PremiumModal
-          clientId={clientId}
-          onClose={() => { setShowPremium(false); fetchSubStatus(); }}
-          onClaimSubmitted={() => { setClaimSubmitted(true); fetchSubStatus(); }}
-          claimStatus={claimSubmitted || isPending ? "pending" : "idle"}
-          triggeredByLimit={premiumTriggeredByLimit}
-        />
-      )}
-    </div>
-  );
-}
+// ── AI avatar ─────────────────────────────────────────────────────────────────
 
 function AIAvatar() {
   return (
@@ -710,6 +344,8 @@ function AIAvatar() {
     </div>
   );
 }
+
+// ── Copy button ───────────────────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -732,13 +368,19 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function MessageBubble({ role, content, streaming, error, imageUrl, attachedImageUrl }: {
+// ── Message bubble ────────────────────────────────────────────────────────────
+
+function MessageBubble({
+  role, content, streaming, error, imageUrl, attachedImageUrl, thinking, statusSteps,
+}: {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
   error?: boolean;
   imageUrl?: string;
   attachedImageUrl?: string;
+  thinking?: string;
+  statusSteps?: StatusStep[];
 }) {
   if (role === "user") {
     return (
@@ -792,12 +434,658 @@ function MessageBubble({ role, content, streaming, error, imageUrl, attachedImag
     <div className="flex items-start gap-2.5">
       <AIAvatar />
       <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
+        {/* Tool call status steps */}
+        {statusSteps && statusSteps.length > 0 && (
+          <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
+            style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
+            <StatusSteps steps={statusSteps} />
+          </div>
+        )}
         <div className="px-4 py-3 rounded-2xl rounded-bl-md"
           style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
+          {/* Thinking / reasoning trace */}
+          {thinking && (
+            <ThinkingBlock content={thinking} streaming={streaming && !content} />
+          )}
           <MarkdownContent content={content} streaming={streaming} />
         </div>
         {!streaming && <div className="pl-1"><CopyButton text={content} /></div>}
       </div>
+    </div>
+  );
+}
+
+// ── Main Chat component ───────────────────────────────────────────────────────
+
+export default function Chat() {
+  const params = useParams<{ id: string }>();
+  const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
+  const { model, setModel } = useAppContext();
+  const isNew = !params.id || params.id === "new";
+  const convId = isNew ? null : parseInt(params.id, 10);
+  const clientId = getClientId();
+
+  const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId } });
+  const createConversation = useCreateConversation();
+
+  const [messages, setMessages] = useState<StreamMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingToken, setStreamingToken] = useState("");
+  const [streamingThinking, setStreamingThinking] = useState("");
+  const [streamingSteps, setStreamingSteps] = useState<StatusStep[]>([]);
+  const [optimisticUser, setOptimisticUser] = useState("");
+  const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showPremium, setShowPremium] = useState(false);
+  const [premiumTriggeredByLimit, setPremiumTriggeredByLimit] = useState(false);
+  const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
+  const [claimSubmitted, setClaimSubmitted] = useState(false);
+
+  // Image state: list of base64 strings (up to MAX_IMAGES)
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [imageLoadingCount, setImageLoadingCount] = useState(0); // how many are still compressing
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [optimisticImages, setOptimisticImages] = useState<string[]>([]);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const apiBase = import.meta.env.VITE_API_URL || "";
+
+  const fetchSubStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/subscription/status`, { headers: { "X-Client-ID": clientId } });
+      if (res.ok) {
+        const data = await res.json() as SubStatus;
+        setSubStatus(data);
+        if (data.status === "pending") setClaimSubmitted(true);
+      }
+    } catch { /* ignore */ }
+  }, [clientId, apiBase]);
+
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("premium") === "1") { setShowPremium(true); setPremiumTriggeredByLimit(false); }
+    fetchSubStatus();
+  }, [fetchSubStatus]);
+
+  useEffect(() => {
+    if (conv?.messages) {
+      setMessages(conv.messages.map(m => ({
+        id: String(m.id),
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        attachedImageUrl: (m as any).attachedImage ?? undefined,
+        imageUrl: (m as any).generatedImageUrl ?? undefined,
+      })));
+    }
+  }, [conv]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamingToken, optimisticUser]);
+
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+  }, [input]);
+
+  useEffect(() => {
+    if (!showModelMenu) return;
+    const handler = () => setShowModelMenu(false);
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, [showModelMenu]);
+
+  const msgCount = subStatus?.messageCount ?? 0;
+  const isPremium = subStatus?.isActive ?? false;
+  const isPending = subStatus?.status === "pending";
+  const isLimited = subStatus !== null && !isPremium && msgCount >= FREE_LIMIT;
+
+  const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
+
+  // Force flash model for free users
+  useEffect(() => {
+    if (!isPremium && model !== "deepseek/deepseek-v4-flash") {
+      setModel("deepseek/deepseek-v4-flash");
+    }
+  }, [isPremium, model, setModel]);
+
+  // ── Image attachment ────────────────────────────────────────────────────────
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    setImageError(null);
+
+    const remaining = MAX_IMAGES - attachedImages.length;
+    if (remaining <= 0) {
+      setImageError(`Max ${MAX_IMAGES} images per message`);
+      return;
+    }
+
+    const toProcess = files.slice(0, remaining);
+    if (files.length > remaining) {
+      setImageError(`Only ${remaining} more image${remaining === 1 ? "" : "s"} allowed (max ${MAX_IMAGES})`);
+    }
+
+    for (const file of toProcess) {
+      if (!file.type.startsWith("image/")) {
+        setImageError("Only image files are supported");
+        continue;
+      }
+      if (file.size > MAX_IMAGE_SIZE_BYTES) {
+        setImageError(`Image too large (max 5 MB per image): ${file.name}`);
+        continue;
+      }
+
+      setImageLoadingCount(c => c + 1);
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const raw = ev.target?.result as string;
+        try {
+          const compressed = await compressImage(raw);
+          setAttachedImages(prev => {
+            if (prev.length >= MAX_IMAGES) return prev;
+            return [...prev, compressed];
+          });
+        } catch {
+          setImageError(`Failed to process image: ${file.name}`);
+        } finally {
+          setImageLoadingCount(c => Math.max(0, c - 1));
+        }
+      };
+      reader.onerror = () => {
+        setImageError(`Failed to read image: ${file.name}`);
+        setImageLoadingCount(c => Math.max(0, c - 1));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removeImage = (index: number) => {
+    setAttachedImages(prev => prev.filter((_, i) => i !== index));
+    setImageError(null);
+  };
+
+  // ── Send ────────────────────────────────────────────────────────────────────
+
+  const handleSend = useCallback(async () => {
+    const trimmed = input.trim();
+    if ((!trimmed && attachedImages.length === 0) || isStreaming) return;
+    if (isLimited) { openPremium(true); return; }
+    if (imageLoadingCount > 0) return; // wait for compression to finish
+
+    const userMessage = trimmed;
+    const capturedImages = [...attachedImages];
+    // Use first image for vision (API supports one at a time currently)
+    const primaryImage = capturedImages[0] || null;
+
+    setInput("");
+    setAttachedImages([]);
+    setImageError(null);
+    setOptimisticImages(capturedImages);
+    setIsStreaming(true);
+    setStreamingToken("");
+    setStreamingThinking("");
+    setStreamingSteps([]);
+    setOptimisticUser(userMessage);
+
+    let targetId = convId;
+    try {
+      if (isNew) {
+        const t = (userMessage.slice(0, 45) || "📷 Image") + (userMessage.length > 45 ? "…" : "");
+        const result = await createConversation.mutateAsync({ data: { title: t }, headers: { "X-Client-ID": clientId } } as any);
+        targetId = result.id;
+        queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
+      }
+
+      abortRef.current = new AbortController();
+      const res = await fetch(`${apiBase}/api/conversations/${targetId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Client-ID": clientId },
+        body: JSON.stringify({
+          content: userMessage,
+          model,
+          userPrompt: getUserPrompt(),
+          imageBase64: primaryImage || undefined,
+        }),
+        signal: abortRef.current.signal,
+      });
+
+      if (res.status === 402) {
+        await fetchSubStatus();
+        openPremium(true);
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(), role: "user", content: userMessage,
+          attachedImageUrl: primaryImage || undefined,
+        }]);
+        return;
+      }
+
+      if (res.status === 429) {
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: "Too many requests — please wait a moment and try again.", error: true },
+        ]);
+        return;
+      }
+
+      if (res.status === 409) {
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: "A response is already in progress. Please wait for it to finish.", error: true },
+        ]);
+        return;
+      }
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "Server error");
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: errText || "Server error. Please try again.", error: true },
+        ]);
+        return;
+      }
+
+      // ── Consume SSE stream ──────────────────────────────────────────────
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+      let fullToken = "";
+      let fullThinking = "";
+      const liveSteps: StatusStep[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop()!;
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const evt = JSON.parse(line.slice(6)) as SseEvent;
+
+            if (evt.type === "token" && evt.content) {
+              fullToken += evt.content;
+              setStreamingToken(fullToken);
+            }
+
+            if (evt.type === "thinking" && evt.content) {
+              fullThinking += evt.content;
+              setStreamingThinking(fullThinking);
+            }
+
+            if (evt.type === "status" && evt.text) {
+              if (!evt.done) {
+                liveSteps.push({ text: evt.text, done: false });
+              } else {
+                // Mark matching step as done
+                const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
+                if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
+              }
+              setStreamingSteps([...liveSteps]);
+            }
+
+            if (evt.type === "error") {
+              const errMsg = evt.message || "Something went wrong. Please try again.";
+              setMessages(prev => [...prev,
+                { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+                { id: (Date.now() + 1).toString(), role: "assistant", content: errMsg, error: true },
+              ]);
+              return;
+            }
+
+            if (evt.type === "done") break;
+          } catch { /* skip malformed */ }
+        }
+      }
+
+      setMessages(prev => [...prev,
+        { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+        {
+          id: (Date.now() + 1).toString(), role: "assistant",
+          content: fullToken || "(no response)",
+          thinking: fullThinking || undefined,
+        },
+      ]);
+      fetchSubStatus();
+      if (isNew && targetId) navigate(`/chat/${targetId}`, { replace: true });
+    } catch (e: any) {
+      if (e.name !== "AbortError") {
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: "Connection error. Please try again.", error: true },
+        ]);
+      }
+    } finally {
+      setIsStreaming(false);
+      setStreamingToken("");
+      setStreamingThinking("");
+      setStreamingSteps([]);
+      setOptimisticUser("");
+      setOptimisticImages([]);
+    }
+  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, createConversation, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
+
+  const imagesLoading = imageLoadingCount > 0;
+  const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !isStreaming && !isLimited && !imagesLoading;
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
+
+      {/* ── Header ── */}
+      <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
+        style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
+        <button onClick={() => navigate("/")}
+          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+          style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
+          <ArrowLeft size={17} />
+        </button>
+
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{
+              background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))",
+              boxShadow: "0 3px 12px hsl(252 82% 68% / 0.35)",
+            }}>
+            <Sparkles size={15} className="text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
+              {isNew ? "New Chat" : conv?.title || "Chat"}
+            </p>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <Zap size={10} style={{ color: "hsl(var(--primary))" }} />
+              <span className="text-[11px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+                {MODEL_LABELS[model]}
+              </span>
+              {isStreaming && (
+                <span className="flex gap-0.5 ml-1">
+                  {[0, 0.15, 0.3].map((delay, i) => (
+                    <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full"
+                      style={{ background: "hsl(var(--primary))", animationDelay: `${delay}s` }} />
+                  ))}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Model selector */}
+        <div className="relative flex-shrink-0">
+          {isPremium ? (
+            <>
+              <button onClick={e => { e.stopPropagation(); setShowModelMenu(v => !v); }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
+                style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
+                {MODEL_LABELS[model]}
+                <ChevronDown size={12} style={{ color: "hsl(var(--muted-foreground))" }} />
+              </button>
+              {showModelMenu && (
+                <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
+                  style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
+                  onClick={e => e.stopPropagation()}>
+                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] as Model[]).map(m => (
+                    <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
+                      className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
+                      style={{
+                        color: model === m ? "hsl(var(--primary))" : "hsl(var(--foreground))",
+                        background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent",
+                      }}
+                      onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
+                      onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                      <span>{MODEL_LABELS[m]}</span>
+                      {m === "deepseek/deepseek-v4-flash" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>
+                      )}
+                      {m === "deepseek/deepseek-v4-pro" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
+                      )}
+                      {m === QWEN_MODEL && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <button onClick={() => openPremium(false)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
+              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
+              title="Upgrade to access more models">
+              V4 Flash
+              <Lock size={10} />
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* ── Messages ── */}
+      <main className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
+        {!isNew && messages.length === 0 && !optimisticUser && (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>Loading…</p>
+          </div>
+        )}
+
+        {isNew && !optimisticUser && (
+          <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-4 pb-8">
+            <div className="relative w-16 h-16 rounded-3xl flex items-center justify-center"
+              style={{
+                background: "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
+                border: "1px solid hsl(252 82% 68% / 0.25)",
+              }}>
+              <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />
+            </div>
+            <div>
+              <p className="font-bold text-xl mb-2 tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
+                What's on your mind?
+              </p>
+              <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
+                {MODEL_LABELS[model]} · Powered by OpenRouter
+              </p>
+            </div>
+          </div>
+        )}
+
+        {messages.map(msg => (
+          <MessageBubble
+            key={msg.id}
+            role={msg.role}
+            content={msg.content}
+            error={msg.error}
+            imageUrl={msg.imageUrl}
+            attachedImageUrl={msg.attachedImageUrl}
+            thinking={msg.thinking}
+          />
+        ))}
+
+        {optimisticUser && (
+          <MessageBubble
+            role="user"
+            content={optimisticUser}
+            attachedImageUrl={optimisticImages[0] || undefined}
+          />
+        )}
+
+        {/* Streaming assistant bubble */}
+        {isStreaming && (streamingSteps.length > 0 || streamingThinking || streamingToken || optimisticUser) && (
+          <div className="flex items-start gap-2.5">
+            <AIAvatar />
+            <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
+              {/* Tool steps */}
+              {streamingSteps.length > 0 && (
+                <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
+                  style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
+                  <StatusSteps steps={streamingSteps} />
+                </div>
+              )}
+              <div className="px-4 py-3 rounded-2xl rounded-bl-md"
+                style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
+                {/* Thinking trace */}
+                {streamingThinking && (
+                  <ThinkingBlock content={streamingThinking} streaming={!streamingToken} />
+                )}
+                {/* Answer tokens or typing dots */}
+                {streamingToken
+                  ? <MarkdownContent content={streamingToken} streaming />
+                  : (
+                    <div className="flex items-center gap-1.5">
+                      {[0, 0.15, 0.3].map((delay, i) => (
+                        <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
+                          style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
+                      ))}
+                      {optimisticImages.length > 0 && !streamingSteps.length && (
+                        <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+                          Analyzing image…
+                        </span>
+                      )}
+                    </div>
+                  )
+                }
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
+      </main>
+
+      {/* ── Footer ── */}
+      <footer className="flex-shrink-0 px-4 pb-4 pt-2">
+
+        {isPending && !isPremium && (
+          <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center"
+            style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}>
+            <span className="text-[11px] font-medium" style={{ color: "hsl(252 82% 60%)" }}>
+              Payment pending — unlimited access activates once confirmed
+            </span>
+          </div>
+        )}
+
+        {!isPremium && !isPending && subStatus !== null && (
+          <UsageBar used={msgCount} limit={FREE_LIMIT} onUpgrade={() => openPremium(false)} />
+        )}
+
+        {isLimited ? (
+          <LimitReachedBanner onUpgrade={() => openPremium(true)} />
+        ) : (
+          <div className="rounded-2xl overflow-hidden transition-all"
+            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}
+            onFocusCapture={e => { e.currentTarget.style.borderColor = "hsl(252 82% 68% / 0.4)"; }}
+            onBlurCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--card-border))"; }}>
+
+            {/* Image previews */}
+            {(attachedImages.length > 0 || imagesLoading) && (
+              <div className="px-3 pt-3 flex items-start gap-2 flex-wrap">
+                {attachedImages.map((img, i) => (
+                  <div key={i} className="relative">
+                    <img src={img} alt={`Attached ${i + 1}`}
+                      className="w-16 h-16 rounded-lg object-cover"
+                      style={{ border: "1px solid hsl(var(--border))" }} />
+                    <button onClick={() => removeImage(i)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center"
+                      style={{ background: "hsl(var(--foreground))", color: "hsl(var(--background))" }}>
+                      <X size={9} strokeWidth={3} />
+                    </button>
+                  </div>
+                ))}
+                {imagesLoading && (
+                  <div className="w-16 h-16 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ border: "1px dashed hsl(var(--border))", background: "hsl(var(--muted))" }}>
+                    <Loader2 size={18} className="animate-spin" style={{ color: "hsl(var(--muted-foreground))" }} />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Image error */}
+            {imageError && (
+              <div className="px-3 pt-2">
+                <p className="text-[11px]" style={{ color: "hsl(var(--destructive))" }}>{imageError}</p>
+              </div>
+            )}
+
+            <div className="flex items-end gap-2 px-4 py-3">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+
+              <button
+                onClick={() => { setImageError(null); fileInputRef.current?.click(); }}
+                disabled={isStreaming || attachedImages.length >= MAX_IMAGES}
+                title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : "Attach image"}
+                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                style={{
+                  background: attachedImages.length > 0 ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
+                  border: `1px solid ${attachedImages.length > 0 ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
+                  color: attachedImages.length >= MAX_IMAGES ? "hsl(var(--muted-foreground) / 0.4)" : attachedImages.length > 0 ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
+                  cursor: attachedImages.length >= MAX_IMAGES ? "not-allowed" : "pointer",
+                }}>
+                <Paperclip size={14} />
+              </button>
+
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                disabled={isStreaming}
+                placeholder="Message AI…"
+                rows={1}
+                className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
+                style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
+              />
+
+              <button
+                onClick={handleSend}
+                disabled={!canSend}
+                title={imagesLoading ? "Waiting for images to process…" : undefined}
+                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                style={{
+                  background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
+                  color: canSend ? "white" : "hsl(var(--muted-foreground))",
+                  boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
+                }}>
+                {imagesLoading
+                  ? <Loader2 size={15} className="animate-spin" />
+                  : <Send size={15} strokeWidth={2} />}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
+          {isLimited
+            ? "Resets daily at midnight UTC"
+            : attachedImages.length > 0
+              ? `${attachedImages.length}/${MAX_IMAGES} images attached · Enter to send`
+              : "Enter to send · Shift+Enter for new line"}
+        </p>
+      </footer>
+
+      {showPremium && (
+        <PremiumModal
+          clientId={clientId}
+          onClose={() => { setShowPremium(false); fetchSubStatus(); }}
+          onClaimSubmitted={() => { setClaimSubmitted(true); fetchSubStatus(); }}
+          claimStatus={claimSubmitted || isPending ? "pending" : "idle"}
+          triggeredByLimit={premiumTriggeredByLimit}
+        />
+      )}
     </div>
   );
 }
