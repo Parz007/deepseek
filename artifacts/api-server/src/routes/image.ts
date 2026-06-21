@@ -42,7 +42,7 @@ router.post("/generate-image", async (req, res) => {
         "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
-        model: "black-forest-labs/flux.2-klein-4b",
+        model: "black-forest-labs/flux-1-schnell", // FIXED: was "black-forest-labs/flux.2-klein-4b"
         modalities: ["image"],
         messages: [
           { role: "user", content: prompt.trim() },
@@ -52,7 +52,7 @@ router.post("/generate-image", async (req, res) => {
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("[image] OpenRouter request failed", response.status, errText);
+      req.log.error({ status: response.status, body: errText }, "[image] OpenRouter request failed");
       res.status(502).json({ error: `Image generation failed: HTTP ${response.status}` });
       return;
     }
@@ -61,12 +61,12 @@ router.post("/generate-image", async (req, res) => {
     try {
       data = await response.json();
     } catch (parseErr) {
-      console.error("[image] Failed to parse OpenRouter response as JSON", parseErr);
+      req.log.error({ err: parseErr }, "[image] Failed to parse OpenRouter response as JSON");
       res.status(502).json({ error: "Invalid response from generation API" });
       return;
     }
 
-    console.log("[image] OpenRouter raw response:", JSON.stringify(data, null, 2));
+    req.log.debug({ data }, "[image] OpenRouter raw response");
 
     const choice = data?.choices?.[0];
     const message = choice?.message;
@@ -74,19 +74,19 @@ router.post("/generate-image", async (req, res) => {
     const imageUrl: string = images?.[0]?.image_url?.url ?? images?.[0]?.url ?? "";
 
     if (!imageUrl) {
-      console.error("[image] No image URL found. Diagnostics:", JSON.stringify({
+      req.log.error({
         finishReason: choice?.finish_reason,
         messageKeys: message ? Object.keys(message) : null,
         imagesValue: images,
         content: message?.content,
-      }, null, 2));
+      }, "[image] No image URL found in response");
       res.status(502).json({ error: "No image returned from generation API" });
       return;
     }
 
     res.json({ imageUrl });
   } catch (err: any) {
-    console.error("[image] Image generation error", err);
+    req.log.error({ err }, "[image] Image generation error");
     res.status(500).json({ error: "Internal server error" });
   }
 });
