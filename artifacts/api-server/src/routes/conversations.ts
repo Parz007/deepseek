@@ -117,9 +117,9 @@ async function executeToolCall(name: string, argsJson: string): Promise<string> 
   }
 }
 
-// Emits a { type: "tool_status" } SSE event before a tool call runs so the
-// client can show a real-time animated indicator. Includes the raw argument
-// for richer labels (e.g. the search query or URL being fetched).
+// Emits a tool_status SSE event before a tool call runs so the client can show
+// a real-time animated indicator. Includes the raw argument for richer labels
+// (e.g. the search query or URL being fetched).
 function emitToolStatus(
   res: import("express").Response,
   toolName: string,
@@ -314,8 +314,7 @@ router.post("/conversations/:id/messages", async (req, res) => {
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      // FIX: use { type: "error" } so the client error handler fires
-      res.write(`data: ${JSON.stringify({ type: "error", message: "OPENROUTER_API_KEY not set" })}\n\n`);
+      res.write(`data: ${JSON.stringify({ error: "OPENROUTER_API_KEY not set" })}\n\n`);
       res.end();
       return;
     }
@@ -413,8 +412,7 @@ router.post("/conversations/:id/messages", async (req, res) => {
 
       if (!orResponse.ok || !orResponse.body) {
         const errText = await orResponse.text();
-        // FIX: use { type: "error" } so the client error handler fires
-        res.write(`data: ${JSON.stringify({ type: "error", message: `HTTP ${orResponse.status}: ${errText}` })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: `HTTP ${orResponse.status}: ${errText}` })}\n\n`);
         res.end();
         return;
       }
@@ -469,9 +467,8 @@ router.post("/conversations/:id/messages", async (req, res) => {
       if (!hasToolCalls) break;
 
       // ── Emit tool_status BEFORE executing each call ───────────────────────
-      // The client receives these immediately and shows an animated pill per
-      // running tool (ToolStatusIndicator). The detail field (query / url) is
-      // shown inside the pill so the user sees exactly what is being fetched.
+      // The client receives these events immediately and can display animated
+      // indicators like "🔍 Searching the web…" while the network request runs.
       for (const tc of toolCalls) {
         emitToolStatus(res, tc.name, tc.arguments);
       }
@@ -489,7 +486,7 @@ router.post("/conversations/:id/messages", async (req, res) => {
         },
       ];
 
-      // Execute all tools (parallel for independent calls)
+      // Execute all tools (may run in parallel for independent calls)
       const toolResultMsgs = await Promise.all(
         toolCalls.map(async tc => ({
           role: "tool" as const,
@@ -500,22 +497,16 @@ router.post("/conversations/:id/messages", async (req, res) => {
 
       toolMessages = [...toolMessages, ...toolResultMsgs];
 
-      // FIX: use { type: "tool_done" } — tells the client to clear the animated
-      // pills (ToolStatusIndicator) and mark all pending steps as done
-      // (checkmark rows in StatusSteps).
+      // tool_done tells the client to clear all active status indicators
       res.write(`data: ${JSON.stringify({ type: "tool_done" })}\n\n`);
     }
 
     await db.insert(messagesTable).values({ conversationId: convId, role: "assistant", content: fullResponse });
-
-    // FIX: was { done: true } — must be { type: "done" } so the client's
-    // `evt.type === "done"` guard fires and the stream loop exits cleanly.
-    res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     res.end();
   } catch (err: any) {
     req.log.error({ err }, "Streaming error");
-    // FIX: use { type: "error" } so the client error handler fires
-    res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     res.end();
   }
 });
