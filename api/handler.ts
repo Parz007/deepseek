@@ -152,8 +152,7 @@ const RATE_LIMIT_MAX = 15;
 const rateLimitMap = new Map<string, number[]>();
 const inFlightRequests = new Set<string>();
 
-// ── Rate limiter (with eviction to prevent memory leak) ───────────────────────
-// FIX #7: Periodically evict expired entries so the map doesn't grow forever.
+// ── Rate limiter ──────────────────────────────────────────────────────────────
 
 function checkRateLimit(clientId: string): boolean {
   const now = Date.now();
@@ -164,29 +163,6 @@ function checkRateLimit(clientId: string): boolean {
   timestamps.push(now);
   rateLimitMap.set(clientId, timestamps);
   return true;
-}
-
-// Sweep stale entries every 5 minutes.
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, timestamps] of rateLimitMap.entries()) {
-    const alive = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-    if (alive.length === 0) {
-      rateLimitMap.delete(key);
-    } else {
-      rateLimitMap.set(key, alive);
-    }
-  }
-}, 5 * 60 * 1000).unref();
-
-// ── Admin auth helper ─────────────────────────────────────────────────────────
-// FIX #3: Read the admin secret from the X-Admin-Key header, NOT ?key= query param.
-// URL query params appear in server logs, CDN logs, and browser history.
-
-function checkAdminAuth(req: import("express").Request): boolean {
-  const secret = process.env.ADMIN_SECRET;
-  if (!secret) return false;
-  return req.headers["x-admin-key"] === secret;
 }
 
 // ── Smart model routing ───────────────────────────────────────────────────────
@@ -552,6 +528,8 @@ const INTERNET_TOOLS = [
 ];
 
 // ── Tool status labels ────────────────────────────────────────────────────────
+// Maps each tool to a function that builds the human-readable status label
+// shown in the UI pill while the tool is executing.
 
 const TOOL_DISPLAY: Record<string, (args: Record<string, string>) => string> = {
   web_search:           (a) => `🔍 Searching the web for "${a.query}"`,
@@ -564,12 +542,12 @@ const TOOL_DISPLAY: Record<string, (args: Record<string, string>) => string> = {
 async function executeTool(name: string, args: Record<string, string>): Promise<string> {
   try {
     switch (name) {
-      case "web_search":           return await webSearch(args.query ?? "");
-      case "fetch_url":            return await fetchUrl(args.url ?? "");
-      case "get_weather":          return await getWeather(args.location ?? "");
-      case "get_stock_price":      return await getStockPrice(args.symbol ?? "");
+      case "web_search":        return await webSearch(args.query ?? "");
+      case "fetch_url":         return await fetchUrl(args.url ?? "");
+      case "get_weather":       return await getWeather(args.location ?? "");
+      case "get_stock_price":   return await getStockPrice(args.symbol ?? "");
       case "get_current_datetime": return getCurrentDatetime();
-      default:                     return `Unknown tool: ${name}`;
+      default:                  return `Unknown tool: ${name}`;
     }
   } catch (err: any) {
     return `Tool error: ${err?.message || String(err)}`;
@@ -584,10 +562,10 @@ app.use(express.json({ limit: "20mb" }));
 ensureTables().catch(console.error);
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
-// FIX #3: Auth via X-Admin-Key header, not URL query param.
 
 app.get("/api/admin", async (req, res) => {
-  if (!checkAdminAuth(req)) {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret || req.query.key !== secret) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -630,7 +608,8 @@ app.get("/api/admin", async (req, res) => {
 });
 
 app.post("/api/admin/approve", async (req, res) => {
-  if (!checkAdminAuth(req)) {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret || req.query.key !== secret) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -683,19 +662,6 @@ app.post("/api/subscription/claim", async (req, res) => {
   if (!walletMap[network]) { res.status(400).json({ error: "Invalid network" }); return; }
   try {
     const db = getDb();
-
-    // FIX #6: Do NOT overwrite an already-active subscription back to "pending".
-    // Only update if the current status is NOT "active".
-    const [existing] = await db
-      .select({ status: subscriptionsTable.status })
-      .from(subscriptionsTable)
-      .where(eq(subscriptionsTable.clientId, clientId));
-
-    if (existing?.status === "active") {
-      res.status(409).json({ error: "Subscription is already active." });
-      return;
-    }
-
     await db
       .insert(subscriptionsTable)
       .values({ clientId, status: "pending", plan, txHash, network })
@@ -703,7 +669,7 @@ app.post("/api/subscription/claim", async (req, res) => {
         target: subscriptionsTable.clientId,
         set: { status: "pending", plan, txHash, network, updatedAt: sql`now()` },
       });
-    const networkLabel = ({ erc20: "USDT ERC20", trc20: "USDT TRC20", bep20: "USDT BEP20" } as Record<string, string>)[network];
+    const networkLabel = { erc20: "USDT ERC20", trc20: "USDT TRC20", bep20: "USDT BEP20" }[network];
     const tgText = [
       `🔔 <b>New Premium Payment Claim</b>`,
       ``,
@@ -823,17 +789,11 @@ app.post("/api/telegram/webhook", async (req, res) => {
     }
   } catch (err) {
     console.error("[telegram] webhook callback error:", err);
-    await answerCallback("An error occurred.").catch(() => {});
   }
   res.json({ ok: true });
 });
 
-// FIX #3: Setup endpoint also uses X-Admin-Key header.
 app.get("/api/telegram/setup", async (req, res) => {
-  if (!checkAdminAuth(req)) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const appUrl =
     process.env.APP_URL ||
@@ -850,46 +810,24 @@ app.get("/api/telegram/setup", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message", "callback_query"] }),
     });
-    const result = await r.json();
-    res.json({ webhookUrl, telegramResponse: result });
+    const data = await r.json();
+    res.json({ webhookUrl, telegramResponse: data });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ── Conversations CRUD ────────────────────────────────────────────────────────
-// FIX #4: clientId required; no "return everything" fallback.
-// FIX #1 (partial): Ownership enforced on GET/:id, DELETE, and chat.
 
-function requireClientId(
-  req: import("express").Request,
-  res: import("express").Response,
-  next: import("express").NextFunction
-): void {
-  const clientId = (req.headers["x-client-id"] as string | undefined)?.trim();
-  if (!clientId) {
-    res.status(401).json({ error: "x-client-id header is required" });
-    return;
-  }
-  if (clientId.length > 128 || !/^[\w\-.:@]+$/.test(clientId)) {
-    res.status(400).json({ error: "Invalid x-client-id format" });
-    return;
-  }
-  next();
-}
-
-app.post("/api/conversations", requireClientId, async (req, res) => {
+app.post("/api/conversations", async (req, res) => {
   const { title } = req.body;
-  const clientId = req.headers["x-client-id"] as string;
-  if (!title || typeof title !== "string" || title.trim().length === 0) {
-    res.status(400).json({ error: "title required" });
-    return;
-  }
+  const clientId = req.headers["x-client-id"] as string | undefined;
+  if (!title) { res.status(400).json({ error: "title required" }); return; }
   try {
     const db = getDb();
     const [row] = await db
       .insert(conversationsTable)
-      .values({ title: title.trim().slice(0, 500), clientId })
+      .values({ title, clientId: clientId || null })
       .returning();
     res.status(201).json({ id: row.id, title: row.title, createdAt: row.createdAt });
   } catch (err: any) {
@@ -898,16 +836,13 @@ app.post("/api/conversations", requireClientId, async (req, res) => {
   }
 });
 
-// FIX #4: Always filter by clientId — no fallback that dumps all conversations.
-app.get("/api/conversations", requireClientId, async (req, res) => {
-  const clientId = req.headers["x-client-id"] as string;
+app.get("/api/conversations", async (req, res) => {
+  const clientId = req.headers["x-client-id"] as string | undefined;
   try {
     const db = getDb();
-    const rows = await db
-      .select()
-      .from(conversationsTable)
-      .where(eq(conversationsTable.clientId, clientId))
-      .orderBy(asc(conversationsTable.createdAt));
+    const rows = clientId
+      ? await db.select().from(conversationsTable).where(eq(conversationsTable.clientId, clientId)).orderBy(asc(conversationsTable.createdAt))
+      : await db.select().from(conversationsTable).orderBy(asc(conversationsTable.createdAt));
     res.json(rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt })));
   } catch (err: any) {
     console.error("[conversations] list error:", err);
@@ -915,20 +850,11 @@ app.get("/api/conversations", requireClientId, async (req, res) => {
   }
 });
 
-// FIX #1: Ownership check — clientId must match the conversation's owner.
-app.get("/api/conversations/:id", requireClientId, async (req, res) => {
+app.get("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const clientId = req.headers["x-client-id"] as string;
-  if (!Number.isInteger(id) || id <= 0) {
-    res.status(400).json({ error: "Invalid conversation id" });
-    return;
-  }
   try {
     const db = getDb();
-    const [conv] = await db
-      .select()
-      .from(conversationsTable)
-      .where(and(eq(conversationsTable.id, id), eq(conversationsTable.clientId, clientId)));
+    const [conv] = await db.select().from(conversationsTable).where(eq(conversationsTable.id, id));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
     const msgs = await db
       .select()
@@ -955,19 +881,13 @@ app.get("/api/conversations/:id", requireClientId, async (req, res) => {
   }
 });
 
-// FIX #1: Ownership check on delete.
-app.delete("/api/conversations/:id", requireClientId, async (req, res) => {
+app.delete("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const clientId = req.headers["x-client-id"] as string;
-  if (!Number.isInteger(id) || id <= 0) {
-    res.status(400).json({ error: "Invalid conversation id" });
-    return;
-  }
   try {
     const db = getDb();
     const [row] = await db
       .delete(conversationsTable)
-      .where(and(eq(conversationsTable.id, id), eq(conversationsTable.clientId, clientId)))
+      .where(eq(conversationsTable.id, id))
       .returning({ id: conversationsTable.id });
     if (!row) { res.status(404).json({ error: "Not found" }); return; }
     res.status(204).send();
@@ -979,10 +899,10 @@ app.delete("/api/conversations/:id", requireClientId, async (req, res) => {
 
 // ── Chat — tool-calling pre-pass + streaming final response ──────────────────
 
-app.post("/api/conversations/:id/messages", requireClientId, async (req, res) => {
+app.post("/api/conversations/:id/messages", async (req, res) => {
   const convId = Number(req.params.id);
   const { content, model, userPrompt, imageBase64 } = req.body;
-  const clientId = req.headers["x-client-id"] as string;
+  const clientId = (req.headers["x-client-id"] as string) || "anonymous";
   const reqKey = `${clientId}:${convId}`;
   const reqStart = Date.now();
 
@@ -1011,16 +931,18 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
   try {
     const db = getDb();
 
-    const sub = await getOrCreateSubscription(db, clientId);
-    const isUserActive =
-      sub.status === "active" &&
-      (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
-
-    if (!isUserActive) {
-      const msgCount = await getMessageCount(db, clientId);
-      if (msgCount >= FREE_LIMIT) {
-        res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
-        return;
+    let isUserActive = false;
+    if (clientId !== "anonymous") {
+      const sub = await getOrCreateSubscription(db, clientId);
+      isUserActive =
+        sub.status === "active" &&
+        (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
+      if (!isUserActive) {
+        const msgCount = await getMessageCount(db, clientId);
+        if (msgCount >= FREE_LIMIT) {
+          res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
+          return;
+        }
       }
     }
 
@@ -1076,11 +998,7 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
       }
     }
 
-    // FIX #1: Ownership check — verify this conversation belongs to this clientId.
-    const [conv] = await db
-      .select({ id: conversationsTable.id })
-      .from(conversationsTable)
-      .where(and(eq(conversationsTable.id, convId), eq(conversationsTable.clientId, clientId)));
+    const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
 
     await db.insert(messagesTable).values({
@@ -1105,7 +1023,7 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
     }
 
     // Load persistent memory
-    const userMemory = await getUserMemory(db, clientId);
+    const userMemory = clientId !== "anonymous" ? await getUserMemory(db, clientId) : "";
 
     // Set SSE headers
     res.setHeader("Content-Type", "text/event-stream");
@@ -1144,6 +1062,7 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
       ...openRouterMessages,
     ];
 
+    // Tool-calling loop (non-streaming pre-pass)
     type AnyMessage = {
       role: "system" | "user" | "assistant" | "tool";
       content: string;
@@ -1197,9 +1116,11 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
         const toolName: string = tc.function?.name || "";
         const displayText = TOOL_DISPLAY[toolName]?.(args) || `⚙️ Running ${toolName}`;
 
+        // Emit status BEFORE executing — client shows animated indicator immediately
         sseStatus(res, displayText, false);
         const toolResult = await executeTool(toolName, args);
         toolMessages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+        // Mark step as done — client shows checkmark
         sseStatus(res, displayText, true);
       }
     }
@@ -1247,6 +1168,7 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
     const decoder = new TextDecoder();
     let buffer = "";
 
+    // <think> tag parser — routes tagged content to sseThinking, rest to sseToken
     let inThink = false;
     let pendingTag = "";
 
@@ -1321,8 +1243,12 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
       }
     } catch (streamErr: any) {
       console.warn("[chat] stream interrupted:", streamErr?.message);
+      if (fullResponse) {
+        sseToken(res, ""); // flush
+      }
     }
 
+    // Always save whatever was received, even if partial
     if (fullResponse) {
       await db.insert(messagesTable).values({
         conversationId: convId,
@@ -1330,9 +1256,12 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
         content: fullResponse,
       });
 
-      const recentHistory = allHistory.slice(-10).map((m) => ({ role: m.role, content: m.content }));
-      recentHistory.push({ role: "assistant", content: fullResponse });
-      updateUserMemory(db, clientId, recentHistory, userMemory).catch(() => {});
+      // Update persistent memory asynchronously (fire and forget)
+      if (clientId !== "anonymous") {
+        const recentHistory = allHistory.slice(-10).map((m) => ({ role: m.role, content: m.content }));
+        recentHistory.push({ role: "assistant", content: fullResponse });
+        updateUserMemory(db, clientId, recentHistory, userMemory).catch(() => {});
+      }
     }
 
     const elapsed = Date.now() - reqStart;
@@ -1352,11 +1281,10 @@ app.post("/api/conversations/:id/messages", requireClientId, async (req, res) =>
 });
 
 // ── Image generation ──────────────────────────────────────────────────────────
-// FIX #2: requireClientId middleware — anonymous callers cannot use this endpoint.
 
-app.post("/api/generate-image", requireClientId, async (req, res) => {
+app.post("/api/generate-image", async (req, res) => {
   const { prompt, imageBase64, conversationId: existingConvId, conversationTitle } = req.body;
-  const clientId = req.headers["x-client-id"] as string;
+  const clientId = req.headers["x-client-id"] as string | undefined;
 
   if ((!prompt || !prompt.trim()) && !imageBase64) {
     res.status(400).json({ error: "prompt or image required" });
@@ -1364,16 +1292,18 @@ app.post("/api/generate-image", requireClientId, async (req, res) => {
   }
 
   try {
-    const db = getDb();
-    const sub = await getOrCreateSubscription(db, clientId);
-    const isActive =
-      sub.status === "active" &&
-      (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
-    if (!isActive) {
-      const msgCount = await getMessageCount(db, clientId);
-      if (msgCount >= FREE_LIMIT) {
-        res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
-        return;
+    if (clientId) {
+      const db = getDb();
+      const sub = await getOrCreateSubscription(db, clientId);
+      const isActive =
+        sub.status === "active" &&
+        (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
+      if (!isActive) {
+        const msgCount = await getMessageCount(db, clientId);
+        if (msgCount >= FREE_LIMIT) {
+          res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
+          return;
+        }
       }
     }
 
@@ -1433,6 +1363,7 @@ app.post("/api/generate-image", requireClientId, async (req, res) => {
 
     let savedConvId: number | null = null;
     try {
+      const db = getDb();
       const userPromptText = (prompt || "").trim() || "Generate image";
       const title = conversationTitle || userPromptText.slice(0, 60) || "Image";
       let convId: number;
@@ -1441,7 +1372,7 @@ app.post("/api/generate-image", requireClientId, async (req, res) => {
       } else {
         const [newConv] = await db
           .insert(conversationsTable)
-          .values({ title, clientId })
+          .values({ title, clientId: clientId || null })
           .returning({ id: conversationsTable.id });
         convId = newConv.id;
       }
