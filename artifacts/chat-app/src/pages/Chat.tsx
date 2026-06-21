@@ -644,7 +644,6 @@ export default function Chat() {
     setImageError(null);
     setOptimisticImages(capturedImages);
     setIsStreaming(true);
-    showLoader(); // ← whale loader appears
     setStreamingToken("");
     setStreamingThinking("");
     setStreamingSteps([]);
@@ -735,7 +734,6 @@ export default function Chat() {
               const evt = JSON.parse(line.slice(6)) as SseEvent;
 
               if (evt.type === "token" && evt.content) {
-                if (!fullToken) hideLoader(); // hide as soon as first word arrives
                 fullToken += evt.content;
                 setStreamingToken(fullToken);
               }
@@ -800,7 +798,6 @@ export default function Chat() {
         ]);
       }
     } finally {
-      hideLoader(); // ← whale loader disappears
       setIsStreaming(false);
       setStreamingToken("");
       setStreamingThinking("");
