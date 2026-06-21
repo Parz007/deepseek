@@ -222,7 +222,7 @@ router.post("/telegram/webhook", async (req, res) => {
     // Send reply to Telegram user
     await sendMessage(chatId, reply);
   } catch (err: any) {
-    console.error("Telegram webhook error:", err);
+    req.log.error({ err }, "Telegram webhook error");
     await sendMessage(chatId, "Something went wrong. Please try again.");
   }
 });
