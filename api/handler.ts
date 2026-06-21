@@ -527,12 +527,16 @@ const INTERNET_TOOLS = [
   },
 ];
 
+// ── Tool status labels ────────────────────────────────────────────────────────
+// Maps each tool to a function that builds the human-readable status label
+// shown in the UI pill while the tool is executing.
+
 const TOOL_DISPLAY: Record<string, (args: Record<string, string>) => string> = {
-  web_search: (a) => `Searching the web for "${a.query}"`,
-  fetch_url: (a) => `Fetching ${a.url}`,
-  get_weather: (a) => `Getting weather for ${a.location}`,
-  get_stock_price: (a) => `Looking up ${a.symbol} stock price`,
-  get_current_datetime: () => `Getting current date and time`,
+  web_search:           (a) => `🔍 Searching the web for "${a.query}"`,
+  fetch_url:            (a) => `📡 Fetching ${a.url}`,
+  get_weather:          (a) => `🌤️ Getting weather for ${a.location}`,
+  get_stock_price:      (a) => `📈 Looking up ${a.symbol} stock price`,
+  get_current_datetime: ()  => `🕐 Getting current date and time`,
 };
 
 async function executeTool(name: string, args: Record<string, string>): Promise<string> {
@@ -709,7 +713,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
 
   const msg = update?.message;
 
-  // Send typing indicator immediately on any text message
   if (msg?.chat?.id) {
     sendTelegramTyping(msg.chat.id).catch(() => {});
   }
@@ -801,126 +804,145 @@ app.get("/api/telegram/setup", async (req, res) => {
     return;
   }
   const webhookUrl = `${appUrl}/api/telegram/webhook`;
-  const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: webhookUrl }),
-  });
-  const result = await response.json();
-  res.json({ webhookUrl, result });
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message", "callback_query"] }),
+    });
+    const data = await r.json();
+    res.json({ webhookUrl, telegramResponse: data });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// ── Conversation CRUD ─────────────────────────────────────────────────────────
+// ── Conversations CRUD ────────────────────────────────────────────────────────
+
+app.post("/api/conversations", async (req, res) => {
+  const { title } = req.body;
+  const clientId = req.headers["x-client-id"] as string | undefined;
+  if (!title) { res.status(400).json({ error: "title required" }); return; }
+  try {
+    const db = getDb();
+    const [row] = await db
+      .insert(conversationsTable)
+      .values({ title, clientId: clientId || null })
+      .returning();
+    res.status(201).json({ id: row.id, title: row.title, createdAt: row.createdAt });
+  } catch (err: any) {
+    console.error("[conversations] create error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 app.get("/api/conversations", async (req, res) => {
   const clientId = req.headers["x-client-id"] as string | undefined;
   try {
     const db = getDb();
     const rows = clientId
-      ? await db.select().from(conversationsTable).where(eq(conversationsTable.clientId, clientId)).orderBy(desc(conversationsTable.createdAt))
-      : await db.select().from(conversationsTable).orderBy(desc(conversationsTable.createdAt));
-    res.json(rows);
+      ? await db.select().from(conversationsTable).where(eq(conversationsTable.clientId, clientId)).orderBy(asc(conversationsTable.createdAt))
+      : await db.select().from(conversationsTable).orderBy(asc(conversationsTable.createdAt));
+    res.json(rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt })));
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/conversations", async (req, res) => {
-  const { title } = req.body;
-  const clientId = req.headers["x-client-id"] as string | undefined;
-  if (!title || typeof title !== "string" || title.trim().length === 0) {
-    res.status(400).json({ error: "title required" });
-    return;
-  }
-  try {
-    const db = getDb();
-    const [row] = await db
-      .insert(conversationsTable)
-      .values({ title: title.slice(0, 200), clientId: clientId || null })
-      .returning();
-    res.json(row);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error("[conversations] list error:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
 app.get("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0) { res.status(400).json({ error: "Invalid conversation id" }); return; }
   try {
     const db = getDb();
     const [conv] = await db.select().from(conversationsTable).where(eq(conversationsTable.id, id));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
-    const messages = await db.select().from(messagesTable).where(eq(messagesTable.conversationId, id)).orderBy(asc(messagesTable.createdAt));
-    res.json({ ...conv, messages });
+    const msgs = await db
+      .select()
+      .from(messagesTable)
+      .where(eq(messagesTable.conversationId, id))
+      .orderBy(asc(messagesTable.createdAt));
+    res.json({
+      id: conv.id,
+      title: conv.title,
+      createdAt: conv.createdAt,
+      messages: msgs.map((m) => ({
+        id: m.id,
+        conversationId: m.conversationId,
+        role: m.role,
+        content: m.content,
+        attachedImage: m.attachedImage ?? undefined,
+        generatedImageUrl: m.generatedImageUrl ?? undefined,
+        createdAt: m.createdAt,
+      })),
+    });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error("[conversations] get error:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
 app.delete("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0) { res.status(400).json({ error: "Invalid conversation id" }); return; }
   try {
     const db = getDb();
-    await db.delete(conversationsTable).where(eq(conversationsTable.id, id));
-    res.status(204).end();
+    const [row] = await db
+      .delete(conversationsTable)
+      .where(eq(conversationsTable.id, id))
+      .returning({ id: conversationsTable.id });
+    if (!row) { res.status(404).json({ error: "Not found" }); return; }
+    res.status(204).send();
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error("[conversations] delete error:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// ── Chat endpoint ─────────────────────────────────────────────────────────────
+// ── Chat — tool-calling pre-pass + streaming final response ──────────────────
 
 app.post("/api/conversations/:id/messages", async (req, res) => {
-  const reqStart = Date.now();
   const convId = Number(req.params.id);
+  const { content, model, userPrompt, imageBase64 } = req.body;
+  const clientId = (req.headers["x-client-id"] as string) || "anonymous";
+  const reqKey = `${clientId}:${convId}`;
+  const reqStart = Date.now();
 
-  if (!Number.isFinite(convId) || convId <= 0) {
-    res.status(400).json({ error: "Invalid conversation id" });
+  if (!content && !imageBase64) {
+    res.status(400).json({ error: "content or image required" });
     return;
   }
 
-  const { content, model, userPrompt, imageBase64 } = req.body;
-  const clientId = (req.headers["x-client-id"] as string) || "anonymous";
-
-  if (!content && !imageBase64) { res.status(400).json({ error: "content or image required" }); return; }
-  if (typeof content === "string" && content.length > 32_000) { res.status(400).json({ error: "Message too long (max 32,000 characters)" }); return; }
-  if (imageBase64 && typeof imageBase64 === "string" && imageBase64.length > 10_000_000) { res.status(400).json({ error: "Image too large (max ~7.5 MB)" }); return; }
+  if (inFlightRequests.has(reqKey)) {
+    res.status(409).json({ error: "A response is already in progress for this conversation." });
+    return;
+  }
 
   if (!checkRateLimit(clientId)) {
     res.status(429).json({ error: "Too many requests. Please wait a moment." });
     return;
   }
 
-  const reqKey = `${clientId}:${convId}`;
-  if (inFlightRequests.has(reqKey)) {
-    res.status(409).json({ error: "A request is already in progress for this conversation." });
-    return;
-  }
   inFlightRequests.add(reqKey);
 
-  const messageContent: string = (content as string) || "What does this image show?";
-
-  const selectedModel: AllowedModel = ALLOWED_MODELS.includes(model as AllowedModel)
-    ? model
+  const messageContent: string = content ?? "What does this image show?";
+  const selectedModel: AllowedModel = (ALLOWED_MODELS as readonly string[]).includes(model)
+    ? (model as AllowedModel)
     : "deepseek/deepseek-v4-flash";
 
   try {
     const db = getDb();
-    let isUserActive = false;
 
-    if (clientId && clientId !== "anonymous") {
-      const [sub, msgCount] = await Promise.all([
-        getOrCreateSubscription(db, clientId),
-        getMessageCount(db, clientId),
-      ]);
+    let isUserActive = false;
+    if (clientId !== "anonymous") {
+      const sub = await getOrCreateSubscription(db, clientId);
       isUserActive =
         sub.status === "active" &&
         (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
-      if (!isUserActive && msgCount >= FREE_LIMIT) {
-        res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
-        return;
+      if (!isUserActive) {
+        const msgCount = await getMessageCount(db, clientId);
+        if (msgCount >= FREE_LIMIT) {
+          res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
+          return;
+        }
       }
     }
 
@@ -1040,7 +1062,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       ...openRouterMessages,
     ];
 
-    // Tool-calling loop (non-streaming)
+    // Tool-calling loop (non-streaming pre-pass)
     type AnyMessage = {
       role: "system" | "user" | "assistant" | "tool";
       content: string;
@@ -1092,10 +1114,13 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         let args: Record<string, string> = {};
         try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
         const toolName: string = tc.function?.name || "";
-        const displayText = TOOL_DISPLAY[toolName]?.(args) || `Running ${toolName}`;
+        const displayText = TOOL_DISPLAY[toolName]?.(args) || `⚙️ Running ${toolName}`;
+
+        // Emit status BEFORE executing — client shows animated indicator immediately
         sseStatus(res, displayText, false);
         const toolResult = await executeTool(toolName, args);
         toolMessages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+        // Mark step as done — client shows checkmark
         sseStatus(res, displayText, true);
       }
     }
@@ -1217,7 +1242,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
         }
       }
     } catch (streamErr: any) {
-      // Connection dropped mid-stream — save whatever we got and send partial done
       console.warn("[chat] stream interrupted:", streamErr?.message);
       if (fullResponse) {
         sseToken(res, ""); // flush
