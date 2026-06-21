@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { conversationsTable, messagesTable } from "@workspace/db";
-import { eq, asc } from "drizzle-orm";
+import { eq, asc, and } from "drizzle-orm";
 import { FREE_LIMIT, getMessageCount, getOrCreateSubscription } from "./subscriptions";
 import { webSearch, fetchUrl, WEB_TOOLS } from "../lib/web-tools.js";
 
@@ -37,7 +37,7 @@ You have real-time internet access via the web_search and fetch_url tools. Use t
 
 FORMAT:
 - Get straight to the answer. No preamble.
-- Step-by-step when instructions are needed. Complete steps, no steps omitted.
+- Step-by-step when instructions are needed. Complete steps, no omitted.
 - Working code when code is requested. No placeholders.
 - Specific quantities, names, methods when specifics are asked for.
 - Short and direct when a short answer is all that's needed.
@@ -87,13 +87,33 @@ const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-v4-flash"];
 const VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct";
 
 // ── Tool status labels ────────────────────────────────────────────────────────
-// Maps each tool function name to a human-readable status label shown in the UI
-// while the tool is executing. Add new tools here to get automatic indicators.
 
 const TOOL_STATUS_LABELS: Record<string, string> = {
   web_search: "🔍 Searching the web…",
   fetch_url:  "📡 Fetching URL…",
 };
+
+// ── Security: require clientId ────────────────────────────────────────────────
+// Every conversation route requires x-client-id. Without it the request is
+// rejected immediately — no data is ever returned for anonymous callers.
+
+function requireClientId(
+  req: import("express").Request,
+  res: import("express").Response,
+  next: import("express").NextFunction,
+): void {
+  const clientId = (req.headers["x-client-id"] as string | undefined)?.trim();
+  if (!clientId) {
+    res.status(401).json({ error: "x-client-id header is required" });
+    return;
+  }
+  // Sanitise: max 128 chars, only safe characters
+  if (clientId.length > 128 || !/^[\w\-.:@]+$/.test(clientId)) {
+    res.status(400).json({ error: "Invalid x-client-id format" });
+    return;
+  }
+  next();
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -117,9 +137,6 @@ async function executeToolCall(name: string, argsJson: string): Promise<string> 
   }
 }
 
-// Emits a tool_status SSE event before a tool call runs so the client can show
-// a real-time animated indicator. Includes the raw argument for richer labels
-// (e.g. the search query or URL being fetched).
 function emitToolStatus(
   res: import("express").Response,
   toolName: string,
@@ -131,21 +148,27 @@ function emitToolStatus(
     const args = JSON.parse(argsJson) as Record<string, string>;
     if (toolName === "web_search" && args.query) extra.query = args.query;
     if (toolName === "fetch_url"  && args.url)   extra.url   = args.url;
-  } catch { /* ignore parse errors — label alone is still useful */ }
+  } catch { /* ignore */ }
 
   res.write(
     `data: ${JSON.stringify({ type: "tool_status", tool: toolName, label, ...extra })}\n\n`,
   );
 }
 
-// ── CRUD routes ───────────────────────────────────────────────────────────────
+// ── CRUD routes (all protected by requireClientId) ────────────────────────────
 
-router.post("/conversations", async (req, res) => {
+router.post("/conversations", requireClientId, async (req, res) => {
   const { title } = req.body;
-  const clientId = req.headers["x-client-id"] as string | undefined;
-  if (!title) { res.status(400).json({ error: "title required" }); return; }
+  const clientId = req.headers["x-client-id"] as string;
+  if (!title || typeof title !== "string" || title.trim().length === 0) {
+    res.status(400).json({ error: "title required" });
+    return;
+  }
   try {
-    const [row] = await db.insert(conversationsTable).values({ title, clientId: clientId ?? null }).returning();
+    const [row] = await db
+      .insert(conversationsTable)
+      .values({ title: title.trim().slice(0, 500), clientId })
+      .returning();
     res.status(201).json({ id: row.id, title: row.title, createdAt: row.createdAt });
   } catch (err) {
     req.log.error({ err }, "Failed to create conversation");
@@ -153,12 +176,15 @@ router.post("/conversations", async (req, res) => {
   }
 });
 
-router.get("/conversations", async (req, res) => {
-  const clientId = req.headers["x-client-id"] as string | undefined;
+// SECURITY FIX: always filter by clientId — no "return all" fallback
+router.get("/conversations", requireClientId, async (req, res) => {
+  const clientId = req.headers["x-client-id"] as string;
   try {
-    const rows = clientId
-      ? await db.select().from(conversationsTable).where(eq(conversationsTable.clientId, clientId)).orderBy(asc(conversationsTable.createdAt))
-      : await db.select().from(conversationsTable).orderBy(asc(conversationsTable.createdAt));
+    const rows = await db
+      .select()
+      .from(conversationsTable)
+      .where(eq(conversationsTable.clientId, clientId))
+      .orderBy(asc(conversationsTable.createdAt));
     res.json(rows.map(r => ({ id: r.id, title: r.title, createdAt: r.createdAt })));
   } catch (err) {
     req.log.error({ err }, "Failed to list conversations");
@@ -166,12 +192,25 @@ router.get("/conversations", async (req, res) => {
   }
 });
 
-router.get("/conversations/:id", async (req, res) => {
+// SECURITY FIX: ownership check — clientId must match the conversation's owner
+router.get("/conversations/:id", requireClientId, async (req, res) => {
   const id = Number(req.params.id);
+  const clientId = req.headers["x-client-id"] as string;
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid conversation id" });
+    return;
+  }
   try {
-    const [conv] = await db.select().from(conversationsTable).where(eq(conversationsTable.id, id));
+    const [conv] = await db
+      .select()
+      .from(conversationsTable)
+      .where(and(eq(conversationsTable.id, id), eq(conversationsTable.clientId, clientId)));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
-    const msgs = await db.select().from(messagesTable).where(eq(messagesTable.conversationId, id)).orderBy(asc(messagesTable.createdAt));
+    const msgs = await db
+      .select()
+      .from(messagesTable)
+      .where(eq(messagesTable.conversationId, id))
+      .orderBy(asc(messagesTable.createdAt));
     res.json({
       id: conv.id, title: conv.title, createdAt: conv.createdAt,
       messages: msgs.map(m => ({
@@ -190,10 +229,19 @@ router.get("/conversations/:id", async (req, res) => {
   }
 });
 
-router.delete("/conversations/:id", async (req, res) => {
+// SECURITY FIX: ownership check on delete
+router.delete("/conversations/:id", requireClientId, async (req, res) => {
   const id = Number(req.params.id);
+  const clientId = req.headers["x-client-id"] as string;
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid conversation id" });
+    return;
+  }
   try {
-    const [row] = await db.delete(conversationsTable).where(eq(conversationsTable.id, id)).returning({ id: conversationsTable.id });
+    const [row] = await db
+      .delete(conversationsTable)
+      .where(and(eq(conversationsTable.id, id), eq(conversationsTable.clientId, clientId)))
+      .returning({ id: conversationsTable.id });
     if (!row) { res.status(404).json({ error: "Not found" }); return; }
     res.status(204).send();
   } catch (err) {
@@ -202,10 +250,25 @@ router.delete("/conversations/:id", async (req, res) => {
   }
 });
 
-router.get("/conversations/:id/messages", async (req, res) => {
+// SECURITY FIX: ownership check on messages list
+router.get("/conversations/:id/messages", requireClientId, async (req, res) => {
   const id = Number(req.params.id);
+  const clientId = req.headers["x-client-id"] as string;
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid conversation id" });
+    return;
+  }
   try {
-    const msgs = await db.select().from(messagesTable).where(eq(messagesTable.conversationId, id)).orderBy(asc(messagesTable.createdAt));
+    const [conv] = await db
+      .select({ id: conversationsTable.id })
+      .from(conversationsTable)
+      .where(and(eq(conversationsTable.id, id), eq(conversationsTable.clientId, clientId)));
+    if (!conv) { res.status(404).json({ error: "Not found" }); return; }
+    const msgs = await db
+      .select()
+      .from(messagesTable)
+      .where(eq(messagesTable.conversationId, id))
+      .orderBy(asc(messagesTable.createdAt));
     res.json(msgs.map(m => ({
       id: m.id,
       conversationId: m.conversationId,
@@ -223,11 +286,16 @@ router.get("/conversations/:id/messages", async (req, res) => {
 
 // ── Chat — streaming + web search tool-calling loop ──────────────────────────
 
-router.post("/conversations/:id/messages", async (req, res) => {
+// SECURITY FIX: ownership check before appending messages
+router.post("/conversations/:id/messages", requireClientId, async (req, res) => {
   const convId = Number(req.params.id);
   const { content, model, userPrompt, imageBase64 } = req.body;
-  const clientId = req.headers["x-client-id"] as string | undefined;
+  const clientId = req.headers["x-client-id"] as string;
 
+  if (!Number.isInteger(convId) || convId <= 0) {
+    res.status(400).json({ error: "Invalid conversation id" });
+    return;
+  }
   if (!content && !imageBase64) { res.status(400).json({ error: "content or image required" }); return; }
 
   const messageContent: string = content ?? "What does this image show?";
@@ -237,17 +305,15 @@ router.post("/conversations/:id/messages", async (req, res) => {
 
   try {
     let isUserActive = false;
-    if (clientId) {
-      const sub = await getOrCreateSubscription(clientId);
-      isUserActive =
-        sub.status === "active" &&
-        (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
-      if (!isUserActive) {
-        const msgCount = await getMessageCount(clientId);
-        if (msgCount >= FREE_LIMIT) {
-          res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
-          return;
-        }
+    const sub = await getOrCreateSubscription(clientId);
+    isUserActive =
+      sub.status === "active" &&
+      (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
+    if (!isUserActive) {
+      const msgCount = await getMessageCount(clientId);
+      if (msgCount >= FREE_LIMIT) {
+        res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
+        return;
       }
     }
 
@@ -290,7 +356,11 @@ router.post("/conversations/:id/messages", async (req, res) => {
       }
     }
 
-    const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
+    // SECURITY FIX: verify conversation belongs to this clientId before using it
+    const [conv] = await db
+      .select({ id: conversationsTable.id })
+      .from(conversationsTable)
+      .where(and(eq(conversationsTable.id, convId), eq(conversationsTable.clientId, clientId)));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
 
     await db.insert(messagesTable).values({
@@ -349,7 +419,6 @@ router.post("/conversations/:id/messages", async (req, res) => {
     let fullThinking = "";
     const MAX_TOOL_ITERATIONS = 3;
 
-    // <think> tag parser — routes tagged content as thinking, rest as tokens
     let inThink = false;
     let pendingTag = "";
 
@@ -466,9 +535,6 @@ router.post("/conversations/:id/messages", async (req, res) => {
 
       if (!hasToolCalls) break;
 
-      // ── Emit tool_status BEFORE executing each call ───────────────────────
-      // The client receives these events immediately and can display animated
-      // indicators like "🔍 Searching the web…" while the network request runs.
       for (const tc of toolCalls) {
         emitToolStatus(res, tc.name, tc.arguments);
       }
@@ -486,7 +552,6 @@ router.post("/conversations/:id/messages", async (req, res) => {
         },
       ];
 
-      // Execute all tools (may run in parallel for independent calls)
       const toolResultMsgs = await Promise.all(
         toolCalls.map(async tc => ({
           role: "tool" as const,
@@ -496,18 +561,32 @@ router.post("/conversations/:id/messages", async (req, res) => {
       );
 
       toolMessages = [...toolMessages, ...toolResultMsgs];
-
-      // tool_done tells the client to clear all active status indicators
-      res.write(`data: ${JSON.stringify({ type: "tool_done" })}\n\n`);
     }
 
-    await db.insert(messagesTable).values({ conversationId: convId, role: "assistant", content: fullResponse });
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    // Flush any pending tag buffer
+    if (pendingTag) {
+      res.write(`data: ${JSON.stringify({ type: "token", content: pendingTag })}\n\n`);
+      fullResponse += pendingTag;
+    }
+
+    if (fullResponse.trim()) {
+      await db.insert(messagesTable).values({
+        conversationId: convId,
+        role: "assistant",
+        content: fullResponse,
+      });
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
     res.end();
-  } catch (err: any) {
-    req.log.error({ err }, "Streaming error");
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
+  } catch (err) {
+    req.log.error({ err }, "Failed to process message");
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Internal server error" });
+    } else {
+      res.write(`data: ${JSON.stringify({ error: "Stream error" })}\n\n`);
+      res.end();
+    }
   }
 });
 
