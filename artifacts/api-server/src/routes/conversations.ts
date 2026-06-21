@@ -86,6 +86,15 @@ type AllowedModel = (typeof ALLOWED_MODELS)[number];
 const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-v4-flash"];
 const VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct";
 
+// ── Tool status labels ────────────────────────────────────────────────────────
+// Maps each tool function name to a human-readable status label shown in the UI
+// while the tool is executing. Add new tools here to get automatic indicators.
+
+const TOOL_STATUS_LABELS: Record<string, string> = {
+  web_search: "🔍 Searching the web…",
+  fetch_url:  "📡 Fetching URL…",
+};
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function buildOrHeaders(apiKey: string) {
@@ -106,6 +115,27 @@ async function executeToolCall(name: string, argsJson: string): Promise<string> 
   } catch (e: any) {
     return `Error executing ${name}: ${e?.message ?? String(e)}`;
   }
+}
+
+// Emits a tool_status SSE event before a tool call runs so the client can show
+// a real-time animated indicator. Includes the raw argument for richer labels
+// (e.g. the search query or URL being fetched).
+function emitToolStatus(
+  res: import("express").Response,
+  toolName: string,
+  argsJson: string,
+): void {
+  const label = TOOL_STATUS_LABELS[toolName] ?? `⚙️ Running ${toolName}…`;
+  let extra: Record<string, string> = {};
+  try {
+    const args = JSON.parse(argsJson) as Record<string, string>;
+    if (toolName === "web_search" && args.query) extra.query = args.query;
+    if (toolName === "fetch_url"  && args.url)   extra.url   = args.url;
+  } catch { /* ignore parse errors — label alone is still useful */ }
+
+  res.write(
+    `data: ${JSON.stringify({ type: "tool_status", tool: toolName, label, ...extra })}\n\n`,
+  );
 }
 
 // ── CRUD routes ───────────────────────────────────────────────────────────────
@@ -436,6 +466,13 @@ router.post("/conversations/:id/messages", async (req, res) => {
 
       if (!hasToolCalls) break;
 
+      // ── Emit tool_status BEFORE executing each call ───────────────────────
+      // The client receives these events immediately and can display animated
+      // indicators like "🔍 Searching the web…" while the network request runs.
+      for (const tc of toolCalls) {
+        emitToolStatus(res, tc.name, tc.arguments);
+      }
+
       toolMessages = [
         ...toolMessages,
         {
@@ -449,6 +486,7 @@ router.post("/conversations/:id/messages", async (req, res) => {
         },
       ];
 
+      // Execute all tools (may run in parallel for independent calls)
       const toolResultMsgs = await Promise.all(
         toolCalls.map(async tc => ({
           role: "tool" as const,
@@ -458,7 +496,9 @@ router.post("/conversations/:id/messages", async (req, res) => {
       );
 
       toolMessages = [...toolMessages, ...toolResultMsgs];
-      res.write(`data: ${JSON.stringify({ tool_use: toolCalls.map(tc => tc.name).join(", ") })}\n\n`);
+
+      // tool_done tells the client to clear all active status indicators
+      res.write(`data: ${JSON.stringify({ type: "tool_done" })}\n\n`);
     }
 
     await db.insert(messagesTable).values({ conversationId: convId, role: "assistant", content: fullResponse });
