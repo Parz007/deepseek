@@ -217,6 +217,8 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
 }
 
 // ── Status steps ──────────────────────────────────────────────────────────────
+// Renders one row per tool call: spinner while running, checkmark when done.
+// The label comes from TOOL_DISPLAY in handler.ts, e.g. "🔍 Searching the web for …"
 
 function StatusSteps({ steps }: { steps: StatusStep[] }) {
   if (!steps.length) return null;
@@ -484,7 +486,6 @@ export default function Chat() {
   const [imageError, setImageError] = useState<string | null>(null);
   const [optimisticImages, setOptimisticImages] = useState<string[]>([]);
 
-  // Track pending image ops with a ref so we can reset safely
   const pendingImageOps = useRef(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -584,13 +585,11 @@ export default function Chat() {
         continue;
       }
 
-      // Increment using ref first to avoid stale closure issues
       pendingImageOps.current += 1;
       setImageLoadingCount(pendingImageOps.current);
 
       const reader = new FileReader();
 
-      // Safety timeout: if compression hangs for >15s, forcibly release the counter
       const safetyTimer = setTimeout(() => {
         decrementImageLoading();
         setImageError(`Processing timed out: ${file.name}`);
@@ -745,8 +744,10 @@ export default function Chat() {
 
               if (evt.type === "status" && evt.text) {
                 if (!evt.done) {
+                  // Tool is starting — add a pending step with spinner
                   liveSteps.push({ text: evt.text, done: false });
                 } else {
+                  // Tool finished — find the matching step and mark it done (checkmark)
                   const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
                   if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
                 }
@@ -763,9 +764,7 @@ export default function Chat() {
           }
         }
       } catch (readErr: any) {
-        // Connection dropped mid-stream — show whatever was received
         if (readErr.name !== "AbortError" && fullToken) {
-          // We have partial content — show it with a note
           fullToken += "\n\n*(Response was cut off due to a connection issue)*";
         } else if (readErr.name !== "AbortError") {
           streamError = "Connection lost. Please try again.";
