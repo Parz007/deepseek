@@ -97,11 +97,13 @@ function App() {
       <AppProvider>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-              <ErrorBoundary>
-                <Router />
-              </ErrorBoundary>
-            </WouterRouter>
+            {!showSplash && (
+              <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+                <ErrorBoundary>
+                  <Router />
+                </ErrorBoundary>
+              </WouterRouter>
+            )}
             <Toaster />
           </TooltipProvider>
         </QueryClientProvider>
