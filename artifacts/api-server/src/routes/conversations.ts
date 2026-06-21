@@ -7,12 +7,7 @@ import { webSearch, fetchUrl, WEB_TOOLS } from "../lib/web-tools.js";
 
 const router = Router();
 
-// ── In-flight deduplication ───────────────────────────────────────────────────
-// FIX #4: prevents duplicate messages when a user double-clicks Send or fires
-// two simultaneous requests to the same conversation.
 const inFlightRequests = new Set<string>();
-
-// ── Prompts ───────────────────────────────────────────────────────────────────
 
 const DEFAULT_SYSTEM_PROMPT = `You are a knowledgeable, direct assistant with expertise across all domains.
 
@@ -53,8 +48,6 @@ const ENGLISH_LOCK_USER = `MANDATORY LANGUAGE LOCK: Every response must be in fl
 
 const ENGLISH_LOCK_ASSISTANT = `Confirmed. Every response will be in clear, fluent, grammatically correct English. No exceptions. Ready.`;
 
-// ── Models ────────────────────────────────────────────────────────────────────
-
 const ALLOWED_MODELS = [
   "deepseek/deepseek-chat",
   "deepseek/deepseek-r1",
@@ -64,8 +57,6 @@ type AllowedModel = (typeof ALLOWED_MODELS)[number];
 
 const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-chat"];
 const VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct";
-
-// ── Smart model routing ───────────────────────────────────────────────────────
 
 const COMPLEX_PATTERNS = [
   /\b(code|program|script|function|algorithm|implement|refactor|debug)\b/i,
@@ -79,8 +70,6 @@ function isComplexQuery(text: string): boolean {
   if (text.length > 400) return true;
   return COMPLEX_PATTERNS.some((p) => p.test(text));
 }
-
-// ── Retry fetch ───────────────────────────────────────────────────────────────
 
 async function fetchWithRetry(
   url: string,
@@ -100,8 +89,6 @@ async function fetchWithRetry(
   }
   throw lastErr;
 }
-
-// ── Tool helpers ──────────────────────────────────────────────────────────────
 
 const TOOL_STATUS_LABELS: Record<string, string> = {
   web_search: "🔍 Searching the web…",
@@ -170,8 +157,6 @@ function parseSearchSources(result: string): SourceCard[] {
   }
   return sources;
 }
-
-// ── CRUD routes ───────────────────────────────────────────────────────────────
 
 router.post("/conversations", requireClientId, async (req, res) => {
   const { title } = req.body;
@@ -265,8 +250,6 @@ router.get("/conversations/:id/messages", requireClientId, async (req, res) => {
   }
 });
 
-// ── Chat — streaming + tool-calling loop ──────────────────────────────────────
-
 router.post("/conversations/:id/messages", requireClientId, async (req, res) => {
   const convId = Number(req.params.id);
   const { content, model, userPrompt, imageBase64 } = req.body;
@@ -279,7 +262,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
     res.status(400).json({ error: "content or image required" }); return;
   }
 
-  // ── FIX #4: In-flight deduplication ──────────────────────────────────────
   const reqKey = `${clientId}:${convId}`;
   if (inFlightRequests.has(reqKey)) {
     res.status(409).json({ error: "A request is already in progress for this conversation." });
@@ -307,7 +289,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       }
     }
 
-    // ── Smart model routing ────────────────────────────────────────────────
     let effectiveModel: AllowedModel = isUserActive
       ? selectedModel
       : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "deepseek/deepseek-chat";
@@ -317,7 +298,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       req.log.info({ clientId: clientId.slice(0, 8) }, "Auto-routed complex query to deepseek-r1");
     }
 
-    // ── Vision preprocessing ───────────────────────────────────────────────
     let imageContext = "";
     if (imageBase64) {
       try {
@@ -346,7 +326,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       }
     }
 
-    // Ownership check
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable)
       .where(and(eq(conversationsTable.id, convId), eq(conversationsTable.clientId, clientId)));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
@@ -356,7 +335,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       content: messageContent, attachedImage: imageBase64 ?? null,
     });
 
-    // ── Context trimming: last 30 turns, max 60k chars ─────────────────────
     const allHistory = await db.select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable).where(eq(messagesTable.conversationId, convId))
       .orderBy(asc(messagesTable.createdAt));
@@ -413,7 +391,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
     let fullThinking = "";
     const MAX_TOOL_ROUNDS = 5;
 
-    // ── Tool-calling loop ──────────────────────────────────────────────────
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       let toolCheckData: any;
       try {
@@ -452,7 +429,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       }
     }
 
-    // ── Streaming final response ───────────────────────────────────────────
     const finalMessages = toolMessages.length > baseMessages.length ? toolMessages : baseMessages;
 
     let streamResponse: Response;
@@ -549,7 +525,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       res.write(`data: ${JSON.stringify({ type: "error", message: "Stream interrupted. Partial response saved." })}\n\n`);
     }
 
-    // Flush pending tag buffer
     if (pendingTag) {
       if (inThink) { res.write(`data: ${JSON.stringify({ type: "thinking", content: pendingTag })}\n\n`); fullThinking += pendingTag; }
       else { res.write(`data: ${JSON.stringify({ type: "token", content: pendingTag })}\n\n`); fullResponse += pendingTag; }
@@ -570,7 +545,7 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       res.end();
     } catch { /* response already ended */ }
   } finally {
-    inFlightRequests.delete(reqKey); // always remove, even on error
+    inFlightRequests.delete(reqKey);
   }
 });
 
