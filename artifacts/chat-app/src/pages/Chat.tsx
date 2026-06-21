@@ -5,26 +5,74 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
   Paperclip, X, Download, Lock, Crown, ChevronRight, Loader2,
+  Square, RotateCcw, ArrowDown, Globe, ImageIcon, StopCircle,
 } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { motion, AnimatePresence } from "framer-motion";
+
+// ── Global CSS injection ───────────────────────────────────────────────────────
+const GLOBAL_STYLES = `
+@keyframes thinkingGlow {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(252 82% 68% / 0); border-color: hsl(var(--border) / 0.6); }
+  50% { box-shadow: 0 0 10px 2px hsl(252 82% 68% / 0.18); border-color: hsl(252 82% 68% / 0.4); }
+}
+@keyframes thinkDot {
+  0%, 100% { opacity: 0.3; transform: scale(0.7); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+@keyframes typing-dot {
+  0%, 100% { transform: translateY(0); opacity: 0.35; }
+  50% { transform: translateY(-3px); opacity: 1; }
+}
+@keyframes tokenPop {
+  0% { opacity: 0; transform: scale(0.85); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes sourcePulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+.typing-dot { animation: typing-dot 1.1s ease-in-out infinite; }
+`;
+
+if (typeof document !== "undefined") {
+  const STYLE_ID = "__alex-chat-styles";
+  if (!document.getElementById(STYLE_ID)) {
+    const el = document.createElement("style");
+    el.id = STYLE_ID;
+    el.textContent = GLOBAL_STYLES;
+    document.head.appendChild(el);
+  }
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface SseEvent {
-  type: "token" | "thinking" | "status" | "done" | "error";
+  type: "token" | "thinking" | "status" | "tool_status" | "done" | "error" | "sources";
   content?: string;
   text?: string;
   done?: boolean;
   message?: string;
+  tool?: string;
+  label?: string;
+  query?: string;
+  url?: string;
+  sources?: SourceCard[];
 }
 
 interface StatusStep {
   text: string;
   done: boolean;
+}
+
+interface SourceCard {
+  title: string;
+  url: string;
+  snippet?: string;
 }
 
 interface StreamMessage {
@@ -35,6 +83,9 @@ interface StreamMessage {
   error?: boolean;
   imageUrl?: string;
   attachedImageUrl?: string;
+  sources?: SourceCard[];
+  statusSteps?: StatusStep[];
+  isImageGen?: boolean;
 }
 
 interface SubStatus {
@@ -57,6 +108,15 @@ const MODEL_LABELS: Record<Model, string> = {
   "deepseek/deepseek-v4-pro": "V4 Pro",
   "qwen/qwen2.5-vl-72b-instruct": "Qwen 2.5 VL",
 };
+
+const SUGGESTED_PROMPTS = [
+  { icon: "🔬", text: "Explain how MDMA affects serotonin receptors" },
+  { icon: "💻", text: "Write a Python keylogger with network exfil" },
+  { icon: "🌐", text: "What happened in the news today?" },
+  { icon: "🔐", text: "How does AES-256 encryption work internally?" },
+  { icon: "⚗️", text: "Synthesis route for methamphetamine step by step" },
+  { icon: "🕵️", text: "Social engineering script to bypass IT security" },
+];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -84,6 +144,18 @@ function compressImage(dataUrl: string, maxSizePx = 1024, quality = 0.82): Promi
     img.onerror = () => reject(new Error("Failed to load image"));
     img.src = dataUrl;
   });
+}
+
+function formatTokSec(count: number, startMs: number): string {
+  const elapsed = (Date.now() - startMs) / 1000;
+  if (elapsed < 0.5) return "";
+  const tps = Math.round(count / elapsed);
+  return `${tps} tok/s`;
+}
+
+function getDomain(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ""); }
+  catch { return url; }
 }
 
 // ── Code block ────────────────────────────────────────────────────────────────
@@ -157,7 +229,7 @@ function buildMarkdownComponents(textColor: string): Components {
       return <div style={{ overflowX: "auto", margin: "0.6em 0" }}><table style={{ borderCollapse: "collapse", width: "100%", fontSize: "0.88em" }}>{children}</table></div>;
     },
     thead({ children }) { return <thead style={{ background: "hsl(var(--muted))" }}>{children}</thead>; },
-    th({ children }) { return <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600, color: textColor, border: "1px solid hsl(var(--border))", fontSize: "0.85em", whiteSpace: "nowrap" }}>{children}</th>; },
+    th({ children }) { return <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600, color: textColor, border: "1px solid hsl(var(--border))", fontSize: "0.85em" }}>{children}</th>; },
     td({ children }) { return <td style={{ padding: "5px 10px", color: textColor, border: "1px solid hsl(var(--border))", verticalAlign: "top" }}>{children}</td>; },
     tr({ children }) { return <tr>{children}</tr>; },
     a({ href, children }) { return <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: "hsl(var(--primary))", textDecoration: "underline", textUnderlineOffset: "2px" }}>{children}</a>; },
@@ -179,51 +251,124 @@ function MarkdownContent({ content, streaming }: { content: string; streaming?: 
 
 function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
   const [open, setOpen] = useState(false);
+
+  // Auto-open while streaming so the user sees it's working
+  useEffect(() => {
+    if (streaming) setOpen(true);
+  }, [streaming]);
+
   if (!content && !streaming) return null;
   return (
-    <div className="mb-2 rounded-xl overflow-hidden"
-      style={{ border: "1px solid hsl(var(--border) / 0.6)", background: "hsl(var(--muted) / 0.4)" }}>
+    <div className="mb-3 rounded-xl overflow-hidden"
+      style={{
+        border: "1px solid hsl(var(--border) / 0.6)",
+        background: "hsl(var(--muted) / 0.4)",
+        animation: streaming ? "thinkingGlow 2s ease-in-out infinite" : "none",
+      }}>
       <button
         onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors"
         style={{ color: "hsl(var(--muted-foreground))" }}>
-        <span className="flex items-center gap-1.5 text-[11px] font-medium flex-1">
-          {streaming && !open
-            ? <Loader2 size={11} className="animate-spin flex-shrink-0" />
-            : <ChevronRight size={11} className="flex-shrink-0 transition-transform" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }} />}
-          {streaming ? "Thinking…" : `Reasoning trace (${content.length} chars)`}
+        <span className="flex items-center gap-2 text-[11px] font-semibold flex-1">
+          {streaming ? (
+            <span className="flex gap-1">
+              {[0, 0.2, 0.4].map((d, i) => (
+                <span key={i} className="w-1 h-1 rounded-full"
+                  style={{ background: "hsl(252 82% 68%)", display: "inline-block", animation: `thinkDot 1.2s ease-in-out ${d}s infinite` }} />
+              ))}
+            </span>
+          ) : (
+            <ChevronRight size={11} className="flex-shrink-0 transition-transform"
+              style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)", color: "hsl(252 82% 68%)" }} />
+          )}
+          <span style={{ color: streaming ? "hsl(252 75% 72%)" : "hsl(var(--muted-foreground))" }}>
+            {streaming ? "Thinking…" : `Reasoning (${content.length} chars)`}
+          </span>
         </span>
       </button>
-      {open && (
-        <div className="px-3 pb-3">
-          <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words"
-            style={{ color: "hsl(var(--muted-foreground))", fontFamily: "var(--app-font-mono)", margin: 0 }}>
-            {content}
-            {streaming && <span className="inline-block w-0.5 h-3 ml-0.5 align-middle animate-pulse" style={{ background: "hsl(var(--muted-foreground))" }} />}
-          </pre>
-        </div>
-      )}
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: "easeInOut" }}>
+            <div className="px-3 pb-3">
+              <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words"
+                style={{ color: "hsl(var(--muted-foreground))", fontFamily: "var(--app-font-mono)", margin: 0 }}>
+                {content}
+                {streaming && <span className="inline-block w-0.5 h-2.5 ml-0.5 align-middle rounded-full animate-pulse" style={{ background: "hsl(252 82% 68%)" }} />}
+              </pre>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 // ── Status steps ──────────────────────────────────────────────────────────────
-// Renders one row per tool call: spinner while running, checkmark when done.
-// The label comes from TOOL_DISPLAY in handler.ts, e.g. "🔍 Searching the web for …"
 
 function StatusSteps({ steps }: { steps: StatusStep[] }) {
-  if (!steps.length) return null;
   return (
-    <div className="mb-2 flex flex-col gap-1">
-      {steps.map((step, i) => (
-        <div key={i} className="flex items-center gap-2 text-[12px]"
-          style={{ color: step.done ? "hsl(142 62% 45%)" : "hsl(var(--muted-foreground))" }}>
-          {step.done
-            ? <Check size={12} strokeWidth={2.5} className="flex-shrink-0" />
-            : <Loader2 size={12} className="animate-spin flex-shrink-0" />}
-          <span>{step.text}</span>
-        </div>
-      ))}
+    <div className="flex flex-col gap-1.5">
+      <AnimatePresence initial={false}>
+        {steps.map((s, i) => (
+          <motion.div key={`${s.text}-${i}`}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="flex items-center gap-2">
+            {s.done
+              ? <Check size={11} style={{ color: "hsl(142 62% 52%)", flexShrink: 0 }} />
+              : (
+                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{ background: "hsl(252 82% 68%)", animation: "thinkDot 1s ease-in-out infinite" }} />
+              )}
+            <span className="text-[11px] font-medium truncate"
+              style={{ color: s.done ? "hsl(142 52% 48%)" : "hsl(var(--muted-foreground))" }}>
+              {s.text}
+            </span>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Source cards ──────────────────────────────────────────────────────────────
+
+function SourceCards({ sources }: { sources: SourceCard[] }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <Globe size={11} style={{ color: "hsl(var(--muted-foreground))" }} />
+        <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "hsl(var(--muted-foreground))" }}>
+          Sources
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {sources.map((s, i) => (
+          <a key={i} href={s.url} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl transition-all active:scale-95"
+            style={{
+              background: "hsl(var(--muted) / 0.6)",
+              border: "1px solid hsl(var(--border))",
+              textDecoration: "none",
+              maxWidth: "100%",
+            }}
+            title={s.snippet || s.url}>
+            <Globe size={10} style={{ color: "hsl(var(--muted-foreground))", flexShrink: 0 }} />
+            <span className="text-[11px] font-medium truncate" style={{ color: "hsl(var(--foreground))", maxWidth: "160px" }}>
+              {s.title || getDomain(s.url)}
+            </span>
+            <span className="text-[10px] flex-shrink-0" style={{ color: "hsl(var(--muted-foreground))" }}>
+              {getDomain(s.url)}
+            </span>
+          </a>
+        ))}
+      </div>
     </div>
   );
 }
@@ -233,24 +378,26 @@ function StatusSteps({ steps }: { steps: StatusStep[] }) {
 function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt?: string }) {
   const [downloading, setDownloading] = useState(false);
   const handleDownload = async () => {
+    if (downloading) return;
     setDownloading(true);
     try {
-      const filename = `flux-${Date.now()}.png`;
-      if (imageUrl.startsWith("data:")) {
-        const a = document.createElement("a"); a.href = imageUrl; a.download = filename; a.click();
-      } else {
-        const res = await fetch(imageUrl);
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
-        URL.revokeObjectURL(url);
-      }
-    } catch { /* ignore */ } finally { setDownloading(false); }
+      const res = await fetch(imageUrl);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `image-${Date.now()}.png`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      window.open(imageUrl, "_blank");
+    } finally {
+      setDownloading(false);
+    }
   };
   return (
     <button onClick={handleDownload} disabled={downloading}
-      title={prompt ? `Download: ${prompt}` : "Download image"}
-      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-90"
+      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-medium transition-all active:scale-95"
       style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
       <Download size={12} />
       {downloading ? "Saving…" : "Download"}
@@ -326,12 +473,13 @@ function LimitReachedBanner({ onUpgrade }: { onUpgrade: () => void }) {
 
 // ── AI avatar ─────────────────────────────────────────────────────────────────
 
-function AIAvatar() {
+function AIAvatar({ streaming = false }: { streaming?: boolean }) {
   return (
     <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
       style={{
         background: "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))",
         border: "1px solid hsl(252 82% 68% / 0.2)",
+        animation: streaming ? "thinkingGlow 2s ease-in-out infinite" : "none",
       }}>
       <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />
     </div>
@@ -364,7 +512,9 @@ function CopyButton({ text }: { text: string }) {
 // ── Message bubble ────────────────────────────────────────────────────────────
 
 function MessageBubble({
-  role, content, streaming, error, imageUrl, attachedImageUrl, thinking, statusSteps,
+  role, content, streaming, error, imageUrl, attachedImageUrl,
+  thinking, statusSteps, sources, isImageGen,
+  onRegenerate,
 }: {
   role: "user" | "assistant";
   content: string;
@@ -374,6 +524,9 @@ function MessageBubble({
   attachedImageUrl?: string;
   thinking?: string;
   statusSteps?: StatusStep[];
+  sources?: SourceCard[];
+  isImageGen?: boolean;
+  onRegenerate?: () => void;
 }) {
   if (role === "user") {
     return (
@@ -397,11 +550,19 @@ function MessageBubble({
     return (
       <div className="flex items-end gap-2.5">
         <AIAvatar />
-        <div className="flex flex-col gap-1 max-w-[85%]">
+        <div className="flex flex-col gap-1.5 max-w-[85%]">
           <div className="px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
             style={{ background: "hsl(var(--destructive) / 0.08)", border: "1px solid hsl(var(--destructive) / 0.25)", color: "hsl(var(--destructive))", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {content}
           </div>
+          {onRegenerate && (
+            <button onClick={onRegenerate}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-medium transition-all active:scale-95 self-start"
+              style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
+              <RotateCcw size={11} />
+              Retry
+            </button>
+          )}
         </div>
       </div>
     );
@@ -412,6 +573,11 @@ function MessageBubble({
       <div className="flex items-start gap-2.5">
         <AIAvatar />
         <div className="flex flex-col gap-2 min-w-0 max-w-[85%]">
+          {isImageGen && (
+            <p className="text-[11px] font-medium flex items-center gap-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+              <ImageIcon size={10} /> Generated image
+            </p>
+          )}
           <div className="rounded-2xl rounded-bl-md overflow-hidden"
             style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
             <img src={imageUrl} alt={content} className="w-full block" style={{ maxWidth: "400px", display: "block" }} />
@@ -425,7 +591,7 @@ function MessageBubble({
 
   return (
     <div className="flex items-start gap-2.5">
-      <AIAvatar />
+      <AIAvatar streaming={streaming} />
       <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
         {statusSteps && statusSteps.length > 0 && (
           <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
@@ -439,8 +605,64 @@ function MessageBubble({
             <ThinkingBlock content={thinking} streaming={streaming && !content} />
           )}
           <MarkdownContent content={content} streaming={streaming} />
+          {sources && sources.length > 0 && <SourceCards sources={sources} />}
         </div>
-        {!streaming && <div className="pl-1"><CopyButton text={content} /></div>}
+        {!streaming && (
+          <div className="pl-1 flex items-center gap-2">
+            <CopyButton text={content} />
+            {onRegenerate && (
+              <button onClick={onRegenerate}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg transition-all active:scale-90 select-none"
+                style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
+                <RotateCcw size={11} strokeWidth={2} />
+                <span className="text-[10px] font-medium leading-none">Regenerate</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Scroll-to-bottom button ───────────────────────────────────────────────────
+
+function ScrollDownButton({ onClick }: { onClick: () => void }) {
+  return (
+    <motion.button
+      initial={{ opacity: 0, scale: 0.8, y: 4 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.8, y: 4 }}
+      transition={{ duration: 0.15 }}
+      onClick={onClick}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium shadow-lg transition-all active:scale-95"
+      style={{
+        background: "hsl(var(--card))",
+        border: "1px solid hsl(var(--border))",
+        color: "hsl(var(--foreground))",
+        boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+      }}>
+      <ArrowDown size={12} />
+      Scroll to bottom
+    </motion.button>
+  );
+}
+
+// ── Image generation loading ──────────────────────────────────────────────────
+
+function ImageGenLoading({ prompt }: { prompt: string }) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <AIAvatar streaming />
+      <div className="flex flex-col gap-2 min-w-0 max-w-[85%]">
+        <div className="px-4 py-3 rounded-2xl rounded-bl-md flex items-center gap-3"
+          style={{ background: "hsl(var(--card))", border: "1px solid hsl(252 82% 68% / 0.2)" }}>
+          <Loader2 size={16} className="animate-spin flex-shrink-0" style={{ color: "hsl(var(--primary))" }} />
+          <div>
+            <p className="text-sm font-medium" style={{ color: "hsl(var(--foreground))" }}>Generating image…</p>
+            <p className="text-[11px] mt-0.5 truncate max-w-[220px]" style={{ color: "hsl(var(--muted-foreground))" }}>{prompt}</p>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -477,12 +699,17 @@ export default function Chat() {
   const [streamingToken, setStreamingToken] = useState("");
   const [streamingThinking, setStreamingThinking] = useState("");
   const [streamingSteps, setStreamingSteps] = useState<StatusStep[]>([]);
+  const [streamingSources, setStreamingSources] = useState<SourceCard[]>([]);
   const [optimisticUser, setOptimisticUser] = useState("");
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showPremium, setShowPremium] = useState(false);
   const [premiumTriggeredByLimit, setPremiumTriggeredByLimit] = useState(false);
   const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
   const [claimSubmitted, setClaimSubmitted] = useState(false);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const [tokSpeed, setTokSpeed] = useState("");
+  const [isImageGenLoading, setIsImageGenLoading] = useState(false);
+  const [imageGenPrompt, setImageGenPrompt] = useState("");
 
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [imageLoadingCount, setImageLoadingCount] = useState(0);
@@ -490,10 +717,15 @@ export default function Chat() {
   const [optimisticImages, setOptimisticImages] = useState<string[]>([]);
 
   const pendingImageOps = useRef(0);
+  const tokenCountRef = useRef(0);
+  const tokenStartRef = useRef(0);
+  const lastUserMsgRef = useRef("");
+  const lastUserImgRef = useRef<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const apiBase = import.meta.env.VITE_API_URL || "";
 
@@ -526,7 +758,23 @@ export default function Chat() {
     }
   }, [conv]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamingToken, optimisticUser]);
+  useEffect(() => {
+    if (!showScrollDown) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, streamingToken, optimisticUser, showScrollDown]);
+
+  // Scroll-to-bottom detector
+  useEffect(() => {
+    const el = mainRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 120;
+      setShowScrollDown(!atBottom);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -542,6 +790,17 @@ export default function Chat() {
     return () => document.removeEventListener("click", handler);
   }, [showModelMenu]);
 
+  // Token speed display
+  useEffect(() => {
+    if (!isStreaming) { setTokSpeed(""); tokenCountRef.current = 0; return; }
+    const id = setInterval(() => {
+      if (tokenCountRef.current > 0 && tokenStartRef.current > 0) {
+        setTokSpeed(formatTokSec(tokenCountRef.current, tokenStartRef.current));
+      }
+    }, 500);
+    return () => clearInterval(id);
+  }, [isStreaming]);
+
   const msgCount = subStatus?.messageCount ?? 0;
   const isPremium = subStatus?.isActive ?? false;
   const isPending = subStatus?.status === "pending";
@@ -550,10 +809,16 @@ export default function Chat() {
   const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
 
   useEffect(() => {
-    if (!isPremium && model !== "deepseek/deepseek-v4-flash") {
+    if (!isPremium && model !== "deepseek/deepseek-v4-flash" && model !== QWEN_MODEL) {
       setModel("deepseek/deepseek-v4-flash");
     }
   }, [isPremium, model, setModel]);
+
+  // ── Stop generation ───────────────────────────────────────────────────────
+
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   // ── Image attachment ──────────────────────────────────────────────────────
 
@@ -568,10 +833,7 @@ export default function Chat() {
     setImageError(null);
 
     const remaining = MAX_IMAGES - attachedImages.length;
-    if (remaining <= 0) {
-      setImageError(`Max ${MAX_IMAGES} images per message`);
-      return;
-    }
+    if (remaining <= 0) { setImageError(`Max ${MAX_IMAGES} images per message`); return; }
 
     const toProcess = files.slice(0, remaining);
     if (files.length > remaining) {
@@ -579,74 +841,111 @@ export default function Chat() {
     }
 
     for (const file of toProcess) {
-      if (!file.type.startsWith("image/")) {
-        setImageError("Only image files are supported");
-        continue;
-      }
-      if (file.size > MAX_IMAGE_SIZE_BYTES) {
-        setImageError(`Image too large (max 5 MB per image): ${file.name}`);
-        continue;
-      }
+      if (!file.type.startsWith("image/")) { setImageError("Only image files are supported"); continue; }
+      if (file.size > MAX_IMAGE_SIZE_BYTES) { setImageError(`Image too large (max 5 MB): ${file.name}`); continue; }
 
       pendingImageOps.current += 1;
       setImageLoadingCount(pendingImageOps.current);
 
       const reader = new FileReader();
-
-      const safetyTimer = setTimeout(() => {
-        decrementImageLoading();
-        setImageError(`Processing timed out: ${file.name}`);
-      }, 15000);
+      const safetyTimer = setTimeout(() => { decrementImageLoading(); setImageError(`Processing timed out: ${file.name}`); }, 15000);
 
       reader.onload = async (ev) => {
         clearTimeout(safetyTimer);
         const raw = ev.target?.result as string;
         try {
           const compressed = await compressImage(raw);
-          setAttachedImages(prev => {
-            if (prev.length >= MAX_IMAGES) return prev;
-            return [...prev, compressed];
-          });
-        } catch {
-          setImageError(`Failed to process image: ${file.name}`);
-        } finally {
-          decrementImageLoading();
-        }
+          setAttachedImages(prev => prev.length >= MAX_IMAGES ? prev : [...prev, compressed]);
+        } catch { setImageError(`Failed to process image: ${file.name}`); }
+        finally { decrementImageLoading(); }
       };
-      reader.onerror = () => {
-        clearTimeout(safetyTimer);
-        setImageError(`Failed to read image: ${file.name}`);
-        decrementImageLoading();
-      };
+      reader.onerror = () => { clearTimeout(safetyTimer); setImageError(`Failed to read: ${file.name}`); decrementImageLoading(); };
       reader.readAsDataURL(file);
     }
   };
 
-  const removeImage = (index: number) => {
-    setAttachedImages(prev => prev.filter((_, i) => i !== index));
-    setImageError(null);
-  };
+  const removeImage = (index: number) => { setAttachedImages(prev => prev.filter((_, i) => i !== index)); setImageError(null); };
+
+  // ── /imagine command ──────────────────────────────────────────────────────
+
+  const handleImageGenerate = useCallback(async (prompt: string) => {
+    if (isLimited) { openPremium(true); return; }
+
+    const userMsg: StreamMessage = { id: Date.now().toString(), role: "user", content: prompt, isImageGen: true };
+    setMessages(prev => [...prev, userMsg]);
+    setImageGenPrompt(prompt);
+    setIsImageGenLoading(true);
+
+    try {
+      const res = await fetch(`${apiBase}/api/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-client-id": clientId },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Image generation failed" })) as any;
+        setMessages(prev => [...prev, {
+          id: (Date.now() + 1).toString(), role: "assistant",
+          content: err.error || "Image generation failed. Please try again.", error: true,
+        }]);
+        return;
+      }
+      const data = await res.json() as { imageUrl: string };
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(), role: "assistant",
+        content: prompt, imageUrl: data.imageUrl, isImageGen: true,
+      }]);
+      fetchSubStatus();
+    } catch (e: any) {
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(), role: "assistant",
+        content: "Connection error during image generation.", error: true,
+      }]);
+    } finally {
+      setIsImageGenLoading(false);
+      setImageGenPrompt("");
+    }
+  }, [apiBase, clientId, isLimited, fetchSubStatus]);
 
   // ── Send ──────────────────────────────────────────────────────────────────
 
-  const handleSend = useCallback(async () => {
-    const trimmed = input.trim();
+  const handleSend = useCallback(async (overrideMessage?: string) => {
+    const trimmed = (overrideMessage ?? input).trim();
     if ((!trimmed && attachedImages.length === 0) || isStreaming) return;
     if (isLimited) { openPremium(true); return; }
     if (imageLoadingCount > 0) return;
+
+    // /imagine command — intercept and generate image inline
+    if (!overrideMessage && trimmed.toLowerCase().startsWith("/imagine ")) {
+      const prompt = trimmed.slice("/imagine ".length).trim();
+      if (prompt) {
+        setInput("");
+        setAttachedImages([]);
+        await handleImageGenerate(prompt);
+        return;
+      }
+    }
 
     const userMessage = trimmed;
     const capturedImages = [...attachedImages];
     const primaryImage = capturedImages[0] || null;
 
-    setInput("");
-    setAttachedImages([]);
+    lastUserMsgRef.current = userMessage;
+    lastUserImgRef.current = primaryImage;
+
+    if (!overrideMessage) {
+      setInput("");
+      setAttachedImages([]);
+    }
     setImageError(null);
     setOptimisticImages(capturedImages);
     setIsStreaming(true);
+    tokenCountRef.current = 0;
+    tokenStartRef.current = 0;
     setStreamingToken("");
     setStreamingThinking("");
     setStreamingSteps([]);
+    setStreamingSources([]);
     setOptimisticUser(userMessage);
 
     let targetId = convId;
@@ -658,7 +957,7 @@ export default function Chat() {
           headers: { "Content-Type": "application/json", "X-Client-ID": clientId },
           body: JSON.stringify({ title: t }),
         });
-        const result = await convRes.json();
+        const result = await convRes.json() as { id: number };
         targetId = result.id;
         queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
       }
@@ -677,15 +976,10 @@ export default function Chat() {
       });
 
       if (res.status === 402) {
-        await fetchSubStatus();
-        openPremium(true);
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(), role: "user", content: userMessage,
-          attachedImageUrl: primaryImage || undefined,
-        }]);
+        await fetchSubStatus(); openPremium(true);
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined }]);
         return;
       }
-
       if (res.status === 429) {
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
@@ -693,15 +987,13 @@ export default function Chat() {
         ]);
         return;
       }
-
       if (res.status === 409) {
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
-          { id: (Date.now() + 1).toString(), role: "assistant", content: "A response is already in progress. Please wait for it to finish.", error: true },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: "A response is already in progress. Please wait.", error: true },
         ]);
         return;
       }
-
       if (!res.ok) {
         const errText = await res.text().catch(() => "Server error");
         setMessages(prev => [...prev,
@@ -711,13 +1003,14 @@ export default function Chat() {
         return;
       }
 
-      // ── Consume SSE stream ───────────────────────────────────────────────
+      // ── Consume SSE stream ─────────────────────────────────────────────────
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let sseBuffer = "";
       let fullToken = "";
       let fullThinking = "";
       const liveSteps: StatusStep[] = [];
+      let liveSources: SourceCard[] = [];
       let streamError: string | null = null;
 
       try {
@@ -734,6 +1027,8 @@ export default function Chat() {
               const evt = JSON.parse(line.slice(6)) as SseEvent;
 
               if (evt.type === "token" && evt.content) {
+                if (!fullToken) tokenStartRef.current = Date.now();
+                tokenCountRef.current += 1;
                 fullToken += evt.content;
                 setStreamingToken(fullToken);
               }
@@ -743,30 +1038,29 @@ export default function Chat() {
                 setStreamingThinking(fullThinking);
               }
 
-              if (evt.type === "status" && evt.text) {
+              if ((evt.type === "status" || evt.type === "tool_status") && evt.text) {
                 if (!evt.done) {
-                  // Tool is starting — add a pending step with spinner
                   liveSteps.push({ text: evt.text, done: false });
                 } else {
-                  // Tool finished — find the matching step and mark it done (checkmark)
                   const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
                   if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
                 }
                 setStreamingSteps([...liveSteps]);
               }
 
-              if (evt.type === "error") {
-                streamError = evt.message || "Something went wrong. Please try again.";
-                break outer;
+              if (evt.type === "sources" && evt.sources) {
+                liveSources = evt.sources;
+                setStreamingSources([...liveSources]);
               }
 
+              if (evt.type === "error") { streamError = evt.message || "Something went wrong."; break outer; }
               if (evt.type === "done") break outer;
             } catch { /* skip malformed */ }
           }
         }
       } catch (readErr: any) {
         if (readErr.name !== "AbortError" && fullToken) {
-          fullToken += "\n\n*(Response was cut off due to a connection issue)*";
+          fullToken += "\n\n*(Response was cut off)*";
         } else if (readErr.name !== "AbortError") {
           streamError = "Connection lost. Please try again.";
         }
@@ -786,6 +1080,8 @@ export default function Chat() {
           id: (Date.now() + 1).toString(), role: "assistant",
           content: fullToken || "(no response)",
           thinking: fullThinking || undefined,
+          statusSteps: liveSteps.length > 0 ? [...liveSteps] : undefined,
+          sources: liveSources.length > 0 ? [...liveSources] : undefined,
         },
       ]);
       fetchSubStatus();
@@ -802,13 +1098,32 @@ export default function Chat() {
       setStreamingToken("");
       setStreamingThinking("");
       setStreamingSteps([]);
+      setStreamingSources([]);
       setOptimisticUser("");
       setOptimisticImages([]);
+      tokenCountRef.current = 0;
     }
-  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
+  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, queryClient, navigate, model, clientId, apiBase, fetchSubStatus, handleImageGenerate]);
+
+  // ── Regenerate ────────────────────────────────────────────────────────────
+
+  const handleRegenerate = useCallback(() => {
+    if (isStreaming || !lastUserMsgRef.current) return;
+    // Remove last AI message
+    setMessages(prev => {
+      const copy = [...prev];
+      // Remove trailing assistant messages
+      while (copy.length > 0 && copy[copy.length - 1].role === "assistant") copy.pop();
+      return copy;
+    });
+    handleSend(lastUserMsgRef.current);
+  }, [isStreaming, handleSend]);
 
   const imagesLoading = imageLoadingCount > 0;
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !isStreaming && !isLimited && !imagesLoading;
+
+  // Is the last message an AI message? (show regenerate on it)
+  const lastMsgIsAssistant = messages.length > 0 && messages[messages.length - 1].role === "assistant";
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -816,7 +1131,7 @@ export default function Chat() {
     <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
 
       {/* ── Header ── */}
-      <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
+      <header className="flex-shrink-0 flex items-center gap-3 px-4 py-3"
         style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
         <button onClick={() => navigate("/")}
           className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
@@ -841,14 +1156,19 @@ export default function Chat() {
               <span className="text-[11px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
                 {MODEL_LABELS[model]}
               </span>
-              {isStreaming && (
-                <span className="flex gap-0.5 ml-1">
+              {isStreaming && tokSpeed ? (
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md"
+                  style={{ background: "hsl(252 82% 68% / 0.1)", color: "hsl(252 75% 65%)", animation: "tokenPop 0.3s ease-out" }}>
+                  {tokSpeed}
+                </span>
+              ) : isStreaming ? (
+                <span className="flex gap-0.5 ml-0.5">
                   {[0, 0.15, 0.3].map((delay, i) => (
                     <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full"
                       style={{ background: "hsl(var(--primary))", animationDelay: `${delay}s` }} />
                   ))}
                 </span>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
@@ -877,15 +1197,9 @@ export default function Chat() {
                       onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
                       onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                       <span>{MODEL_LABELS[m]}</span>
-                      {m === "deepseek/deepseek-v4-flash" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>
-                      )}
-                      {m === "deepseek/deepseek-v4-pro" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
-                      )}
-                      {m === QWEN_MODEL && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>
-                      )}
+                      {m === "deepseek/deepseek-v4-flash" && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>}
+                      {m === "deepseek/deepseek-v4-pro" && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>}
+                      {m === QWEN_MODEL && <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>}
                     </button>
                   ))}
                 </div>
@@ -896,29 +1210,28 @@ export default function Chat() {
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
               style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
               title="Upgrade to access more models">
-              V4 Flash
-              <Lock size={10} />
+              V4 Flash <Lock size={10} />
             </button>
           )}
         </div>
       </header>
 
       {/* ── Messages ── */}
-      <main className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
+      <main ref={mainRef} className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
         {!isNew && messages.length === 0 && !optimisticUser && (
           <div className="flex items-center justify-center h-full">
             <p className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>Loading…</p>
           </div>
         )}
 
-        {isNew && !optimisticUser && (
-          <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-4 pb-8">
+        {isNew && !optimisticUser && !isImageGenLoading && (
+          <div className="flex flex-col items-center justify-center h-full gap-6 text-center px-4 pb-8">
             <div className="relative w-16 h-16 rounded-3xl flex items-center justify-center"
               style={{
                 background: "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
                 border: "1px solid hsl(252 82% 68% / 0.25)",
               }}>
-              <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />
+              <Sparkles size={28} style={{ color: "hsl(var(--primary))" }} strokeWidth={1.5} />
             </div>
             <div>
               <p className="font-bold text-xl mb-2 tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
@@ -927,72 +1240,120 @@ export default function Chat() {
               <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
                 {MODEL_LABELS[model]} · Powered by OpenRouter
               </p>
+              <p className="text-[11px] mt-1" style={{ color: "hsl(var(--muted-foreground) / 0.6)" }}>
+                Tip: type <code style={{ background: "hsl(var(--muted))", padding: "1px 4px", borderRadius: "4px" }}>/imagine</code> to generate images
+              </p>
+            </div>
+            {/* Suggested prompts */}
+            <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
+              {SUGGESTED_PROMPTS.map((p, i) => (
+                <button key={i} onClick={() => setInput(p.text)}
+                  className="text-left px-3 py-2.5 rounded-xl text-[11px] leading-snug transition-all active:scale-[0.97]"
+                  style={{
+                    background: "hsl(var(--card))",
+                    border: "1px solid hsl(var(--border))",
+                    color: "hsl(var(--foreground))",
+                  }}>
+                  <span className="block text-base mb-0.5">{p.icon}</span>
+                  {p.text}
+                </button>
+              ))}
             </div>
           </div>
         )}
 
-        {messages.map(msg => (
-          <MessageBubble
-            key={msg.id}
-            role={msg.role}
-            content={msg.content}
-            error={msg.error}
-            imageUrl={msg.imageUrl}
-            attachedImageUrl={msg.attachedImageUrl}
-            thinking={msg.thinking}
-          />
-        ))}
+        <AnimatePresence initial={false}>
+          {messages.map((msg, idx) => {
+            const isLastAssistant = idx === messages.length - 1 && msg.role === "assistant";
+            return (
+              <motion.div key={msg.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.2, ease: "easeOut" }}>
+                <MessageBubble
+                  role={msg.role}
+                  content={msg.content}
+                  error={msg.error}
+                  imageUrl={msg.imageUrl}
+                  attachedImageUrl={msg.attachedImageUrl}
+                  thinking={msg.thinking}
+                  statusSteps={msg.statusSteps}
+                  sources={msg.sources}
+                  isImageGen={msg.isImageGen}
+                  onRegenerate={isLastAssistant && !isStreaming ? handleRegenerate : undefined}
+                />
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
 
         {(optimisticUser || optimisticImages.length > 0) && (
-          <MessageBubble
-            role="user"
-            content={optimisticUser}
-            attachedImageUrl={optimisticImages[0] || undefined}
-          />
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+            <MessageBubble role="user" content={optimisticUser} attachedImageUrl={optimisticImages[0] || undefined} />
+          </motion.div>
         )}
+
+        {/* Image generation loading */}
+        {isImageGenLoading && <ImageGenLoading prompt={imageGenPrompt} />}
 
         {/* Streaming assistant bubble */}
         {isStreaming && (streamingSteps.length > 0 || streamingThinking || streamingToken || optimisticUser || optimisticImages.length > 0) && (
-          <div className="flex items-start gap-2.5">
-            <AIAvatar />
-            <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
-              {streamingSteps.length > 0 && (
-                <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
-                  style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
-                  <StatusSteps steps={streamingSteps} />
-                </div>
-              )}
-              <div className="px-4 py-3 rounded-2xl rounded-bl-md"
-                style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-                {streamingThinking && (
-                  <ThinkingBlock content={streamingThinking} streaming={!streamingToken} />
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+            <div className="flex items-start gap-2.5">
+              <AIAvatar streaming />
+              <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
+                {streamingSteps.length > 0 && (
+                  <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
+                    style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
+                    <StatusSteps steps={streamingSteps} />
+                  </div>
                 )}
-                {streamingToken
-                  ? <MarkdownContent content={streamingToken} streaming />
-                  : (
-                    <div className="flex items-center gap-1.5">
-                      {[0, 0.15, 0.3].map((delay, i) => (
-                        <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
-                          style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
-                      ))}
-                      {optimisticImages.length > 0 && !streamingSteps.length && (
-                        <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                          Analyzing image…
-                        </span>
-                      )}
-                    </div>
-                  )
-                }
+                <div className="px-4 py-3 rounded-2xl rounded-bl-md"
+                  style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
+                  {streamingThinking && (
+                    <ThinkingBlock content={streamingThinking} streaming={!streamingToken} />
+                  )}
+                  {streamingToken
+                    ? <MarkdownContent content={streamingToken} streaming />
+                    : (
+                      <div className="flex items-center gap-1.5">
+                        {[0, 0.15, 0.3].map((delay, i) => (
+                          <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
+                            style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
+                        ))}
+                        {streamingSteps.length > 0 && !streamingToken && (
+                          <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>Working…</span>
+                        )}
+                        {optimisticImages.length > 0 && !streamingSteps.length && (
+                          <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>Analyzing image…</span>
+                        )}
+                      </div>
+                    )
+                  }
+                  {streamingSources.length > 0 && <SourceCards sources={streamingSources} />}
+                </div>
               </div>
             </div>
-          </div>
+          </motion.div>
         )}
 
         <div ref={bottomRef} />
       </main>
 
       {/* ── Footer ── */}
-      <footer className="flex-shrink-0 px-4 pb-4 pt-2">
+      <footer className="flex-shrink-0 px-4 pb-4 pt-2 relative">
+
+        {/* Scroll-to-bottom indicator */}
+        <div className="absolute left-1/2 -translate-x-1/2" style={{ bottom: "calc(100% + 4px)" }}>
+          <AnimatePresence>
+            {showScrollDown && (
+              <ScrollDownButton onClick={() => {
+                setShowScrollDown(false);
+                bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+              }} />
+            )}
+          </AnimatePresence>
+        </div>
 
         {isPending && !isPremium && (
           <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center"
@@ -1020,8 +1381,7 @@ export default function Chat() {
               <div className="px-3 pt-3 flex items-start gap-2 flex-wrap">
                 {attachedImages.map((img, i) => (
                   <div key={i} className="relative">
-                    <img src={img} alt={`Attached ${i + 1}`}
-                      className="w-16 h-16 rounded-lg object-cover"
+                    <img src={img} alt={`Attached ${i + 1}`} className="w-16 h-16 rounded-lg object-cover"
                       style={{ border: "1px solid hsl(var(--border))" }} />
                     <button onClick={() => removeImage(i)}
                       className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center"
@@ -1039,7 +1399,6 @@ export default function Chat() {
               </div>
             )}
 
-            {/* Image error */}
             {imageError && (
               <div className="px-3 pt-2">
                 <p className="text-[11px]" style={{ color: "hsl(var(--destructive))" }}>{imageError}</p>
@@ -1047,19 +1406,12 @@ export default function Chat() {
             )}
 
             <div className="flex items-end gap-2 px-4 py-3">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={handleFileSelect}
-              />
+              <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileSelect} />
 
               <button
                 onClick={() => { setImageError(null); fileInputRef.current?.click(); }}
                 disabled={isStreaming || imagesLoading || attachedImages.length >= MAX_IMAGES}
-                title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : imagesLoading ? "Processing image…" : "Attach image"}
+                title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : imagesLoading ? "Processing…" : "Attach image"}
                 className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
                 style={{
                   background: imagesLoading ? "hsl(var(--primary) / 0.08)" : attachedImages.length > 0 ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
@@ -1076,36 +1428,49 @@ export default function Chat() {
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                 disabled={isStreaming}
-                placeholder="Message AI…"
+                placeholder={isStreaming ? "Generating…" : "Message Alex… (or /imagine a prompt)"}
                 rows={1}
                 className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
                 style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
               />
 
-              <button
-                onClick={handleSend}
-                disabled={!canSend}
-                title={imagesLoading ? "Waiting for images to process…" : undefined}
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                style={{
-                  background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
-                  color: canSend ? "white" : "hsl(var(--muted-foreground))",
-                  boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
-                }}>
-                {imagesLoading
-                  ? <Loader2 size={15} className="animate-spin" />
-                  : <Send size={15} strokeWidth={2} />}
-              </button>
+              {/* Stop / Send button */}
+              {isStreaming ? (
+                <button onClick={handleStop}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                  style={{
+                    background: "hsl(0 72% 51%)",
+                    color: "white",
+                    boxShadow: "0 3px 12px hsl(0 72% 51% / 0.4)",
+                  }}
+                  title="Stop generating">
+                  <Square size={14} fill="currentColor" />
+                </button>
+              ) : (
+                <button onClick={() => handleSend()}
+                  disabled={!canSend}
+                  title={imagesLoading ? "Waiting for images…" : undefined}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                  style={{
+                    background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
+                    color: canSend ? "white" : "hsl(var(--muted-foreground))",
+                    boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
+                  }}>
+                  {imagesLoading ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} strokeWidth={2} />}
+                </button>
+              )}
             </div>
           </div>
         )}
 
         <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
-          {isLimited
+          {isStreaming
+            ? "Generating… tap ■ to stop"
+            : isLimited
             ? "Resets daily at midnight UTC"
             : attachedImages.length > 0
-              ? `${attachedImages.length}/${MAX_IMAGES} images attached · Enter to send`
-              : "Enter to send · Shift+Enter for new line"}
+            ? `${attachedImages.length}/${MAX_IMAGES} images · Enter to send`
+            : "Enter to send · Shift+Enter for new line · /imagine for images"}
         </p>
       </footer>
 
