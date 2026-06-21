@@ -5,10 +5,17 @@ import { eq, desc, sql } from "drizzle-orm";
 
 const router = Router();
 
-// GET /api/admin?key=<ADMIN_SECRET>  — dashboard overview
-router.get("/admin", async (req, res) => {
+// FIX: Read admin secret from X-Admin-Key header, NOT ?key= URL query param.
+// Usage: add header  X-Admin-Key: <your ADMIN_SECRET value>
+function checkAdminAuth(req: import("express").Request): boolean {
   const secret = process.env.ADMIN_SECRET;
-  if (!secret || req.query.key !== secret) {
+  if (!secret) return false;
+  return req.headers["x-admin-key"] === secret;
+}
+
+// GET /api/admin  — dashboard overview
+router.get("/admin", async (req, res) => {
+  if (!checkAdminAuth(req)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -44,10 +51,9 @@ router.get("/admin", async (req, res) => {
   }
 });
 
-// POST /api/admin/approve?key=<ADMIN_SECRET>  — manually approve a subscription
+// POST /api/admin/approve  — manually approve a subscription
 router.post("/admin/approve", async (req, res) => {
-  const secret = process.env.ADMIN_SECRET;
-  if (!secret || req.query.key !== secret) {
+  if (!checkAdminAuth(req)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -69,10 +75,9 @@ router.post("/admin/approve", async (req, res) => {
   }
 });
 
-// POST /api/admin/reject?key=<ADMIN_SECRET>  — manually reject a subscription
+// POST /api/admin/reject  — manually reject a subscription
 router.post("/admin/reject", async (req, res) => {
-  const secret = process.env.ADMIN_SECRET;
-  if (!secret || req.query.key !== secret) {
+  if (!checkAdminAuth(req)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
