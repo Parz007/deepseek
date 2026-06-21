@@ -17,9 +17,10 @@ const ALLOWED_ORIGINS: (string | RegExp)[] = [
 if (process.env.APP_URL) {
   ALLOWED_ORIGINS.push(process.env.APP_URL);
 }
-// Allow Vercel preview deployments (*.vercel.app) if your app is on Vercel
+// Allow Vercel preview deployments (*.vercel.app) if your app is on Vercel.
+// FIX: use /\./g to replace ALL dots in the domain, not just the first one.
 if (process.env.VERCEL_URL) {
-  ALLOWED_ORIGINS.push(new RegExp(`https://${process.env.VERCEL_URL.replace(".", "\\.")}`));
+  ALLOWED_ORIGINS.push(new RegExp(`https://${process.env.VERCEL_URL.replace(/\./g, "\\.")}`));
   ALLOWED_ORIGINS.push(/https:\/\/.*\.vercel\.app/);
 }
 
