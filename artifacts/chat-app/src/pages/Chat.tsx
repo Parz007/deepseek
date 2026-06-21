@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
+import { ToolStatusIndicator, type ToolStatus } from "@/components/ToolStatusIndicator";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -15,11 +16,19 @@ import type { Components } from "react-markdown";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface SseEvent {
-  type: "token" | "thinking" | "status" | "done" | "error";
+  // token / thinking / done / error — same as before
+  type: "token" | "thinking" | "done" | "error"
+      // tool_status fires before each tool call with the label + optional detail
+      | "tool_status"
+      // tool_done fires once after all tools for that iteration have completed
+      | "tool_done";
   content?: string;
-  text?: string;
-  done?: boolean;
   message?: string;
+  // tool_status fields
+  tool?: string;
+  label?: string;
+  query?: string;
+  url?: string;
 }
 
 interface StatusStep {
@@ -216,20 +225,19 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
   );
 }
 
-// ── Status steps ──────────────────────────────────────────────────────────────
-// Renders one row per tool call: spinner while running, checkmark when done.
-// The label comes from TOOL_DISPLAY in handler.ts, e.g. "🔍 Searching the web for …"
+// ── Status steps (completed tools) ────────────────────────────────────────────
+// Renders one checkmark row per completed tool call. Only shown after tool_done
+// has fired and the animated ToolStatusIndicator pills have cleared.
 
 function StatusSteps({ steps }: { steps: StatusStep[] }) {
-  if (!steps.length) return null;
+  const done = steps.filter(s => s.done);
+  if (!done.length) return null;
   return (
-    <div className="mb-2 flex flex-col gap-1">
-      {steps.map((step, i) => (
+    <div className="flex flex-col gap-1">
+      {done.map((step, i) => (
         <div key={i} className="flex items-center gap-2 text-[12px]"
-          style={{ color: step.done ? "hsl(142 62% 45%)" : "hsl(var(--muted-foreground))" }}>
-          {step.done
-            ? <Check size={12} strokeWidth={2.5} className="flex-shrink-0" />
-            : <Loader2 size={12} className="animate-spin flex-shrink-0" />}
+          style={{ color: "hsl(142 62% 45%)" }}>
+          <Check size={12} strokeWidth={2.5} className="flex-shrink-0" />
           <span>{step.text}</span>
         </div>
       ))}
@@ -436,7 +444,7 @@ function MessageBubble({
     <div className="flex items-start gap-2.5">
       <AIAvatar />
       <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
-        {statusSteps && statusSteps.length > 0 && (
+        {statusSteps && statusSteps.some(s => s.done) && (
           <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
             style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
             <StatusSteps steps={statusSteps} />
@@ -473,7 +481,10 @@ export default function Chat() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingToken, setStreamingToken] = useState("");
   const [streamingThinking, setStreamingThinking] = useState("");
+  // Steps track completed tool calls (shown as checkmarks after tool_done)
   const [streamingSteps, setStreamingSteps] = useState<StatusStep[]>([]);
+  // Active tools track currently-running calls (shown as animated pills)
+  const [activeTools, setActiveTools] = useState<ToolStatus[]>([]);
   const [optimisticUser, setOptimisticUser] = useState("");
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showPremium, setShowPremium] = useState(false);
@@ -517,7 +528,7 @@ export default function Chat() {
         id: String(m.id),
         role: m.role as "user" | "assistant",
         content: m.content,
-        attachedImageUrl: (m as any).attachedImage ?? undefined,
+        attachedImageUrl: (m as any).attachedImageUrl ?? undefined,
         imageUrl: (m as any).generatedImageUrl ?? undefined,
       })));
     }
@@ -641,10 +652,11 @@ export default function Chat() {
     setImageError(null);
     setOptimisticImages(capturedImages);
     setIsStreaming(true);
-    showLoader(); // ← whale loader appears
+    showLoader();
     setStreamingToken("");
     setStreamingThinking("");
     setStreamingSteps([]);
+    setActiveTools([]);
     setOptimisticUser(userMessage);
 
     let targetId = convId;
@@ -715,7 +727,10 @@ export default function Chat() {
       let sseBuffer = "";
       let fullToken = "";
       let fullThinking = "";
+      // liveSteps mirrors streamingSteps but lives in closure for mutable updates
       const liveSteps: StatusStep[] = [];
+      // liveActiveTools mirrors activeTools for closure-local mutation
+      const liveActiveTools: ToolStatus[] = [];
       let streamError: string | null = null;
 
       try {
@@ -731,35 +746,51 @@ export default function Chat() {
             try {
               const evt = JSON.parse(line.slice(6)) as SseEvent;
 
+              // ── Streaming tokens ─────────────────────────────────────────
               if (evt.type === "token" && evt.content) {
-                if (!fullToken) hideLoader(); // hide as soon as first word arrives
+                if (!fullToken) hideLoader();
                 fullToken += evt.content;
                 setStreamingToken(fullToken);
               }
 
+              // ── Thinking tokens ──────────────────────────────────────────
               if (evt.type === "thinking" && evt.content) {
                 fullThinking += evt.content;
                 setStreamingThinking(fullThinking);
               }
 
-              if (evt.type === "status" && evt.text) {
-                if (!evt.done) {
-                  // Tool is starting — add a pending step with spinner
-                  liveSteps.push({ text: evt.text, done: false });
-                } else {
-                  // Tool finished — find the matching step and mark it done (checkmark)
-                  const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
-                  if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
-                }
+              // ── Tool starting ────────────────────────────────────────────
+              // Backend fires { type: "tool_status", tool, label, query?, url? }
+              // before each tool call. We show an animated pill via
+              // ToolStatusIndicator and add a pending step to liveSteps.
+              if (evt.type === "tool_status" && evt.tool && evt.label) {
+                const detail = evt.query || evt.url;
+                liveActiveTools.push({ tool: evt.tool, label: evt.label, detail });
+                setActiveTools([...liveActiveTools]);
+                liveSteps.push({ text: evt.label, done: false });
                 setStreamingSteps([...liveSteps]);
               }
 
+              // ── Tool done (batch) ────────────────────────────────────────
+              // Backend fires { type: "tool_done" } once after all tools for
+              // this iteration complete. Clear the animated pills and mark all
+              // pending steps as done (checkmarks).
+              if (evt.type === "tool_done") {
+                liveActiveTools.length = 0;
+                setActiveTools([]);
+                liveSteps.forEach(s => { s.done = true; });
+                setStreamingSteps([...liveSteps]);
+              }
+
+              // ── Error ────────────────────────────────────────────────────
               if (evt.type === "error") {
                 streamError = evt.message || "Something went wrong. Please try again.";
                 break outer;
               }
 
+              // ── Done ─────────────────────────────────────────────────────
               if (evt.type === "done") break outer;
+
             } catch { /* skip malformed */ }
           }
         }
@@ -797,11 +828,12 @@ export default function Chat() {
         ]);
       }
     } finally {
-      hideLoader(); // ← whale loader disappears
+      hideLoader();
       setIsStreaming(false);
       setStreamingToken("");
       setStreamingThinking("");
       setStreamingSteps([]);
+      setActiveTools([]);
       setOptimisticUser("");
       setOptimisticImages([]);
     }
@@ -951,17 +983,30 @@ export default function Chat() {
           />
         )}
 
-        {/* Streaming assistant bubble */}
-        {isStreaming && (streamingSteps.length > 0 || streamingThinking || streamingToken || optimisticUser || optimisticImages.length > 0) && (
+        {/* ── Streaming assistant bubble ── */}
+        {isStreaming && (activeTools.length > 0 || streamingSteps.length > 0 || streamingThinking || streamingToken || optimisticUser || optimisticImages.length > 0) && (
           <div className="flex items-start gap-2.5">
             <AIAvatar />
             <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
-              {streamingSteps.length > 0 && (
+
+              {/* Animated pills for tools currently running (ToolStatusIndicator).
+                  Disappear when tool_done fires and are replaced by checkmarks. */}
+              {activeTools.length > 0 && (
+                <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
+                  style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
+                  <ToolStatusIndicator statuses={activeTools} />
+                </div>
+              )}
+
+              {/* Checkmark rows for completed tool calls (StatusSteps).
+                  Appear after tool_done once the animated pills clear. */}
+              {streamingSteps.some(s => s.done) && activeTools.length === 0 && (
                 <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
                   style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
                   <StatusSteps steps={streamingSteps} />
                 </div>
               )}
+
               <div className="px-4 py-3 rounded-2xl rounded-bl-md"
                 style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
                 {streamingThinking && (
@@ -975,7 +1020,7 @@ export default function Chat() {
                         <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
                           style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
                       ))}
-                      {optimisticImages.length > 0 && !streamingSteps.length && (
+                      {optimisticImages.length > 0 && !activeTools.length && !streamingSteps.length && (
                         <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
                           Analyzing image…
                         </span>
