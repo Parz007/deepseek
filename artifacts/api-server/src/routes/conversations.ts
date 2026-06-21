@@ -287,10 +287,13 @@ router.post("/conversations/:id/messages", async (req, res) => {
     }
 
     const openRouterMessages = history.map((m, idx) => {
-      if (idx === history.length - 1 && m.role === "user" && imageContext) {
+      if (idx === history.length - 1 && m.role === "user" && imageBase64) {
+        const imageNote = imageContext
+          ? `[The user attached an image. Here is the full image analysis from a vision model:]\n${imageContext}`
+          : `[The user attached an image. The automatic vision analysis failed — you cannot see the image contents. Tell the user their image was received but could not be analyzed, and ask them to describe what they need help with.]`;
         return {
           role: "user" as const,
-          content: `[The user attached an image. Here is the full image analysis from a vision model:]\n${imageContext}\n\n[User's question/message:]\n${m.content}`,
+          content: `${imageNote}\n\n[User's question/message:]\n${m.content}`,
         };
       }
       return { role: m.role as "user" | "assistant", content: m.content };
