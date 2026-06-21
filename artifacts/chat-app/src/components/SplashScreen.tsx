@@ -28,10 +28,11 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
   const [phase, setPhase] = useState<"in" | "hold" | "dive" | "out">("in");
 
   useEffect(() => {
-    const t1 = setTimeout(() => setPhase("hold"), 500);
-    const t2 = setTimeout(() => setPhase("dive"), 2200);
-    const t3 = setTimeout(() => setPhase("out"), 3000);
-    const t4 = setTimeout(onDone, 3600);
+    // Reduced from 3600ms → 1500ms total for faster mini-app startup
+    const t1 = setTimeout(() => setPhase("hold"), 200);
+    const t2 = setTimeout(() => setPhase("dive"), 800);
+    const t3 = setTimeout(() => setPhase("out"), 1200);
+    const t4 = setTimeout(onDone, 1500);
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4); };
   }, [onDone]);
 
@@ -46,9 +47,9 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         background: "linear-gradient(180deg, #010b15 0%, #021628 25%, #042840 55%, #063d63 100%)",
         opacity: phase === "in" ? 0 : phase === "out" ? 0 : 1,
         transition: phase === "in"
-          ? "opacity 0.5s ease-out"
+          ? "opacity 0.2s ease-out"
           : phase === "out"
-          ? "opacity 0.6s ease-in"
+          ? "opacity 0.3s ease-in"
           : "none",
       }}
     >
@@ -113,13 +114,13 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         animation: isDiving
           ? "whale-dive 0.9s cubic-bezier(0.4, 0, 1, 1) forwards"
           : "whale-float 3s ease-in-out infinite",
-        // Radial mask fades the rectangular edges away — no hard box
         WebkitMaskImage: "radial-gradient(ellipse 48% 48% at 50% 50%, black 35%, transparent 72%)",
         maskImage: "radial-gradient(ellipse 48% 48% at 50% 50%, black 35%, transparent 72%)",
       }}>
         <img
           src={WHALE_URL}
           alt="Whale"
+          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           style={{
             width: "100%",
             height: "100%",
@@ -145,7 +146,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
       <div style={{
         marginTop: "36px",
         textAlign: "center",
-        animation: isDiving ? "text-fade 0.5s ease-in forwards" : "fade-up 0.8s ease-out 0.35s both",
+        animation: isDiving ? "text-fade 0.5s ease-in forwards" : "fade-up 0.4s ease-out 0.1s both",
       }}>
         <p style={{
           fontSize: "28px", fontWeight: 800, letterSpacing: "-0.5px",
@@ -167,7 +168,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
       {/* Loading dots */}
       <div style={{
         display: "flex", gap: "7px", marginTop: "30px",
-        animation: isDiving ? "text-fade 0.4s ease-in forwards" : "fade-up 0.8s ease-out 0.55s both",
+        animation: isDiving ? "text-fade 0.4s ease-in forwards" : "fade-up 0.4s ease-out 0.2s both",
       }}>
         {[0, 1, 2].map(i => (
           <div key={i} style={{
