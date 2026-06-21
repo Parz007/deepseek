@@ -89,7 +89,6 @@ async function sendTyping(chatId: number) {
   });
 }
 
-// Answer an inline keyboard callback query (must be done within 10 seconds)
 async function answerCallbackQuery(callbackQueryId: string, text: string, showAlert = false) {
   await fetch(telegramApi("/answerCallbackQuery"), {
     method: "POST",
@@ -98,7 +97,6 @@ async function answerCallbackQuery(callbackQueryId: string, text: string, showAl
   });
 }
 
-// Edit the text of a message (used to update the notification after approve/reject)
 async function editMessageText(chatId: number, messageId: number, text: string) {
   await fetch(telegramApi("/editMessageText"), {
     method: "POST",
@@ -205,10 +203,7 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
 
     try {
       if (cbData.startsWith("approve:")) {
-        // Format: approve:<plan>:<clientId>
         const parts = cbData.split(":");
-        // clientId may contain ":" if it is a UUID (unlikely) or "tg_123456" (safe)
-        // plan is always index 1, clientId is everything from index 2 onward
         const plan = parts[1];
         const clientId = parts.slice(2).join(":");
 
@@ -217,7 +212,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
           return;
         }
 
-        // Compute expiry: monthly = 30 days, lifetime = no expiry
         const expiresAt =
           plan === "monthly"
             ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
@@ -230,7 +224,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
 
         await answerCallbackQuery(cbId, `✅ Approved! ${plan} plan activated.`, true);
 
-        // Update the notification message to show it was approved
         if (fromChatId && messageId) {
           const original = callbackQuery.message?.text ?? "";
           await editMessageText(
@@ -240,7 +233,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
           );
         }
 
-        // Notify the user via their Telegram chat if clientId is a tg_ id
         if (clientId.startsWith("tg_")) {
           const userId = Number(clientId.replace("tg_", ""));
           if (!isNaN(userId)) {
@@ -254,7 +246,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
         }
 
       } else if (cbData.startsWith("reject:")) {
-        // Format: reject:<clientId>
         const clientId = cbData.slice("reject:".length);
 
         if (!clientId) {
@@ -278,7 +269,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
           );
         }
 
-        // Notify the user
         if (clientId.startsWith("tg_")) {
           const userId = Number(clientId.replace("tg_", ""));
           if (!isNaN(userId)) {
@@ -295,7 +285,8 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
       }
     } catch (err: any) {
       req.log.error({ err, cbData }, "Telegram callback_query handler error");
-      await answerCallbackQuery(cbId, "An error occurred. Please try again.", true);
+      // Best-effort: try to inform admin that something failed.
+      await answerCallbackQuery(cbId, "An error occurred. Please try again.", true).catch(() => {});
     }
 
     return;
@@ -309,7 +300,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
   const text: string = message.text.trim();
   const clientId = `tg_${chatId}`;
 
-  // /start command — welcome message
   if (text === "/start") {
     await sendMessage(
       chatId,
@@ -321,7 +311,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
     return;
   }
 
-  // /help command
   if (text === "/help") {
     await sendMessage(
       chatId,
@@ -334,7 +323,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
     return;
   }
 
-  // /new command — clear conversation history
   if (text === "/new") {
     await db.delete(conversationsTable).where(eq(conversationsTable.clientId, clientId));
     await sendMessage(chatId, "Conversation cleared. Starting fresh.");
@@ -342,7 +330,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
   }
 
   try {
-    // Check free message limit
     const sub = await getOrCreateSubscription(clientId);
     const isActive =
       sub.status === "active" &&
@@ -361,7 +348,6 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
       }
     }
 
-    // Get or create persistent conversation for this Telegram chat
     const existing = await db
       .select()
       .from(conversationsTable)
@@ -378,20 +364,16 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
       convId = created.id;
     }
 
-    // Save user message to DB
     await db.insert(messagesTable).values({ conversationId: convId, role: "user", content: text });
 
-    // Show typing indicator
     await sendTyping(chatId);
 
-    // Load full conversation history
     const history = await db
       .select({ role: messagesTable.role, content: messagesTable.content })
       .from(messagesTable)
       .where(eq(messagesTable.conversationId, convId))
       .orderBy(asc(messagesTable.createdAt));
 
-    // Call DeepSeek (non-streaming for Telegram)
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       await sendMessage(chatId, "Configuration error: API key not set.");
@@ -424,26 +406,22 @@ router.post("/telegram/webhook", validateWebhookSecret, async (req, res) => {
     const data = await response.json() as any;
     const reply: string = data.choices?.[0]?.message?.content || "No response received.";
 
-    // Persist AI reply
     await db.insert(messagesTable).values({ conversationId: convId, role: "assistant", content: reply });
 
-    // Send reply to Telegram user
     await sendMessage(chatId, reply);
   } catch (err: any) {
     req.log.error({ err }, "Telegram webhook error");
-    await sendMessage(chatId, "Something went wrong. Please try again.");
+    await sendMessage(chatId, "Something went wrong. Please try again.").catch(() => {});
   }
 });
 
 // ── Webhook registration ───────────────────────────────────────────────────────
-// SECURITY: Protected by ADMIN_SECRET so only you can re-register the webhook.
-// Call: GET /api/telegram/setup?key=<ADMIN_SECRET>
-// IMPORTANT: After applying this file, re-register the webhook by visiting:
-//   https://your-app.vercel.app/api/telegram/setup?key=YOUR_ADMIN_SECRET
-// This is required so Telegram sends callback_query updates (button presses).
+// FIX: Protected by X-Admin-Key header instead of ?key= query param.
+// Call: GET /api/telegram/setup
+//       Header: X-Admin-Key: <your ADMIN_SECRET>
 router.get("/telegram/setup", async (req, res) => {
   const adminSecret = process.env.ADMIN_SECRET;
-  if (!adminSecret || req.query.key !== adminSecret) {
+  if (!adminSecret || req.headers["x-admin-key"] !== adminSecret) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -460,8 +438,6 @@ router.get("/telegram/setup", async (req, res) => {
 
   const body: Record<string, unknown> = {
     url: webhookUrl,
-    // FIX: Added "callback_query" so Telegram sends button-press events.
-    // Without this, approve/reject inline keyboard buttons silently do nothing.
     allowed_updates: ["message", "callback_query"],
   };
   if (webhookSecret) {
