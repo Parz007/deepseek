@@ -50,7 +50,7 @@ interface SubStatus {
 const QWEN_MODEL: Model = "qwen/qwen2.5-vl-72b-instruct";
 const FREE_LIMIT = 20;
 const MAX_IMAGES = 5;
-const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const MODEL_LABELS: Record<Model, string> = {
   "deepseek/deepseek-v4-flash": "V4 Flash",
@@ -434,7 +434,6 @@ function MessageBubble({
     <div className="flex items-start gap-2.5">
       <AIAvatar />
       <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
-        {/* Tool call status steps */}
         {statusSteps && statusSteps.length > 0 && (
           <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
             style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
@@ -443,7 +442,6 @@ function MessageBubble({
         )}
         <div className="px-4 py-3 rounded-2xl rounded-bl-md"
           style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-          {/* Thinking / reasoning trace */}
           {thinking && (
             <ThinkingBlock content={thinking} streaming={streaming && !content} />
           )}
@@ -482,11 +480,13 @@ export default function Chat() {
   const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
   const [claimSubmitted, setClaimSubmitted] = useState(false);
 
-  // Image state: list of base64 strings (up to MAX_IMAGES)
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
-  const [imageLoadingCount, setImageLoadingCount] = useState(0); // how many are still compressing
+  const [imageLoadingCount, setImageLoadingCount] = useState(0);
   const [imageError, setImageError] = useState<string | null>(null);
   const [optimisticImages, setOptimisticImages] = useState<string[]>([]);
+
+  // Track pending image ops with a ref so we can reset safely
+  const pendingImageOps = useRef(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -546,14 +546,18 @@ export default function Chat() {
 
   const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
 
-  // Force flash model for free users
   useEffect(() => {
     if (!isPremium && model !== "deepseek/deepseek-v4-flash") {
       setModel("deepseek/deepseek-v4-flash");
     }
   }, [isPremium, model, setModel]);
 
-  // ── Image attachment ────────────────────────────────────────────────────────
+  // ── Image attachment ──────────────────────────────────────────────────────
+
+  const decrementImageLoading = useCallback(() => {
+    pendingImageOps.current = Math.max(0, pendingImageOps.current - 1);
+    setImageLoadingCount(Math.max(0, pendingImageOps.current));
+  }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -581,9 +585,20 @@ export default function Chat() {
         continue;
       }
 
-      setImageLoadingCount(c => c + 1);
+      // Increment using ref first to avoid stale closure issues
+      pendingImageOps.current += 1;
+      setImageLoadingCount(pendingImageOps.current);
+
       const reader = new FileReader();
+
+      // Safety timeout: if compression hangs for >15s, forcibly release the counter
+      const safetyTimer = setTimeout(() => {
+        decrementImageLoading();
+        setImageError(`Processing timed out: ${file.name}`);
+      }, 15000);
+
       reader.onload = async (ev) => {
+        clearTimeout(safetyTimer);
         const raw = ev.target?.result as string;
         try {
           const compressed = await compressImage(raw);
@@ -594,12 +609,13 @@ export default function Chat() {
         } catch {
           setImageError(`Failed to process image: ${file.name}`);
         } finally {
-          setImageLoadingCount(c => Math.max(0, c - 1));
+          decrementImageLoading();
         }
       };
       reader.onerror = () => {
+        clearTimeout(safetyTimer);
         setImageError(`Failed to read image: ${file.name}`);
-        setImageLoadingCount(c => Math.max(0, c - 1));
+        decrementImageLoading();
       };
       reader.readAsDataURL(file);
     }
@@ -610,17 +626,16 @@ export default function Chat() {
     setImageError(null);
   };
 
-  // ── Send ────────────────────────────────────────────────────────────────────
+  // ── Send ──────────────────────────────────────────────────────────────────
 
   const handleSend = useCallback(async () => {
     const trimmed = input.trim();
     if ((!trimmed && attachedImages.length === 0) || isStreaming) return;
     if (isLimited) { openPremium(true); return; }
-    if (imageLoadingCount > 0) return; // wait for compression to finish
+    if (imageLoadingCount > 0) return;
 
     const userMessage = trimmed;
     const capturedImages = [...attachedImages];
-    // Use first image for vision (API supports one at a time currently)
     const primaryImage = capturedImages[0] || null;
 
     setInput("");
@@ -690,59 +705,73 @@ export default function Chat() {
         return;
       }
 
-      // ── Consume SSE stream ──────────────────────────────────────────────
+      // ── Consume SSE stream ───────────────────────────────────────────────
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let sseBuffer = "";
       let fullToken = "";
       let fullThinking = "";
       const liveSteps: StatusStep[] = [];
+      let streamError: string | null = null;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split("\n");
-        sseBuffer = lines.pop()!;
+      try {
+        outer: while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop()!;
 
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const evt = JSON.parse(line.slice(6)) as SseEvent;
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const evt = JSON.parse(line.slice(6)) as SseEvent;
 
-            if (evt.type === "token" && evt.content) {
-              fullToken += evt.content;
-              setStreamingToken(fullToken);
-            }
-
-            if (evt.type === "thinking" && evt.content) {
-              fullThinking += evt.content;
-              setStreamingThinking(fullThinking);
-            }
-
-            if (evt.type === "status" && evt.text) {
-              if (!evt.done) {
-                liveSteps.push({ text: evt.text, done: false });
-              } else {
-                // Mark matching step as done
-                const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
-                if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
+              if (evt.type === "token" && evt.content) {
+                fullToken += evt.content;
+                setStreamingToken(fullToken);
               }
-              setStreamingSteps([...liveSteps]);
-            }
 
-            if (evt.type === "error") {
-              const errMsg = evt.message || "Something went wrong. Please try again.";
-              setMessages(prev => [...prev,
-                { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
-                { id: (Date.now() + 1).toString(), role: "assistant", content: errMsg, error: true },
-              ]);
-              return;
-            }
+              if (evt.type === "thinking" && evt.content) {
+                fullThinking += evt.content;
+                setStreamingThinking(fullThinking);
+              }
 
-            if (evt.type === "done") break;
-          } catch { /* skip malformed */ }
+              if (evt.type === "status" && evt.text) {
+                if (!evt.done) {
+                  liveSteps.push({ text: evt.text, done: false });
+                } else {
+                  const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
+                  if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
+                }
+                setStreamingSteps([...liveSteps]);
+              }
+
+              if (evt.type === "error") {
+                streamError = evt.message || "Something went wrong. Please try again.";
+                break outer;
+              }
+
+              if (evt.type === "done") break outer;
+            } catch { /* skip malformed */ }
+          }
         }
+      } catch (readErr: any) {
+        // Connection dropped mid-stream — show whatever was received
+        if (readErr.name !== "AbortError" && fullToken) {
+          // We have partial content — show it with a note
+          fullToken += "\n\n*(Response was cut off due to a connection issue)*";
+        } else if (readErr.name !== "AbortError") {
+          streamError = "Connection lost. Please try again.";
+        }
+      }
+
+      if (streamError) {
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: streamError!, error: true },
+        ]);
+        return;
       }
 
       setMessages(prev => [...prev,
@@ -775,7 +804,7 @@ export default function Chat() {
   const imagesLoading = imageLoadingCount > 0;
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !isStreaming && !isLimited && !imagesLoading;
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
@@ -921,7 +950,6 @@ export default function Chat() {
           <div className="flex items-start gap-2.5">
             <AIAvatar />
             <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
-              {/* Tool steps */}
               {streamingSteps.length > 0 && (
                 <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
                   style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
@@ -930,11 +958,9 @@ export default function Chat() {
               )}
               <div className="px-4 py-3 rounded-2xl rounded-bl-md"
                 style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-                {/* Thinking trace */}
                 {streamingThinking && (
                   <ThinkingBlock content={streamingThinking} streaming={!streamingToken} />
                 )}
-                {/* Answer tokens or typing dots */}
                 {streamingToken
                   ? <MarkdownContent content={streamingToken} streaming />
                   : (
