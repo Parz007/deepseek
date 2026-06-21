@@ -1,11 +1,24 @@
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { FREE_LIMIT, getMessageCount, getOrCreateSubscription } from "./subscriptions";
 
 const router = Router();
 
-router.post("/generate-image", async (req, res) => {
+// ── requireClientId middleware ────────────────────────────────────────────────
+// Rejects requests with no x-client-id header so anonymous callers cannot
+// hit the image generation endpoint (which costs money per call).
+function requireClientId(req: Request, res: Response, next: NextFunction): void {
+  const clientId = req.headers["x-client-id"];
+  if (!clientId || typeof clientId !== "string" || !clientId.trim()) {
+    res.status(401).json({ error: "x-client-id header required" });
+    return;
+  }
+  next();
+}
+
+router.post("/generate-image", requireClientId, async (req, res) => {
   const { prompt } = req.body;
-  const clientId = req.headers["x-client-id"] as string | undefined;
+  // clientId is guaranteed to be a non-empty string by requireClientId middleware
+  const clientId = req.headers["x-client-id"] as string;
 
   if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
     res.status(400).json({ error: "prompt required" });
@@ -13,17 +26,15 @@ router.post("/generate-image", async (req, res) => {
   }
 
   try {
-    if (clientId) {
-      const sub = await getOrCreateSubscription(clientId);
-      const isActive =
-        sub.status === "active" &&
-        (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
-      if (!isActive) {
-        const msgCount = await getMessageCount(clientId);
-        if (msgCount >= FREE_LIMIT) {
-          res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
-          return;
-        }
+    const sub = await getOrCreateSubscription(clientId);
+    const isActive =
+      sub.status === "active" &&
+      (sub.plan === "lifetime" || !sub.expiresAt || new Date(sub.expiresAt) > new Date());
+    if (!isActive) {
+      const msgCount = await getMessageCount(clientId);
+      if (msgCount >= FREE_LIMIT) {
+        res.status(402).json({ error: "free_limit_reached", messageCount: msgCount, limit: FREE_LIMIT });
+        return;
       }
     }
 
@@ -42,7 +53,7 @@ router.post("/generate-image", async (req, res) => {
         "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
-        model: "black-forest-labs/flux-1-schnell", // FIXED: was "black-forest-labs/flux.2-klein-4b"
+        model: "black-forest-labs/flux-1-schnell",
         modalities: ["image"],
         messages: [
           { role: "user", content: prompt.trim() },
