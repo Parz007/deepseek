@@ -642,6 +642,7 @@ export default function Chat() {
     setImageError(null);
     setOptimisticImages(capturedImages);
     setIsStreaming(true);
+    showLoader(); // ← whale loader appears
     setStreamingToken("");
     setStreamingThinking("");
     setStreamingSteps([]);
@@ -796,6 +797,7 @@ export default function Chat() {
         ]);
       }
     } finally {
+      hideLoader(); // ← whale loader disappears
       setIsStreaming(false);
       setStreamingToken("");
       setStreamingThinking("");
