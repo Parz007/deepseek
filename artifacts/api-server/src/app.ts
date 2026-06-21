@@ -14,14 +14,35 @@ const app: Express = express();
 const ALLOWED_ORIGINS: (string | RegExp)[] = [
   "https://web.telegram.org",
 ];
+
 if (process.env.APP_URL) {
   ALLOWED_ORIGINS.push(process.env.APP_URL);
 }
-// Allow Vercel preview deployments (*.vercel.app) if your app is on Vercel.
-// FIX: use /\./g to replace ALL dots in the domain, not just the first one.
+
+// FIX: Scope Vercel preview allowance to THIS project's deployments only.
+// Previously /https:\/\/.*\.vercel\.app/ allowed every Vercel app in the world.
+// Now we build a pattern from VERCEL_URL (e.g. "my-project-git-main-team.vercel.app")
+// that only matches preview URLs for this specific project.
 if (process.env.VERCEL_URL) {
-  ALLOWED_ORIGINS.push(new RegExp(`https://${process.env.VERCEL_URL.replace(/\./g, "\\.")}`));
-  ALLOWED_ORIGINS.push(/https:\/\/.*\.vercel\.app/);
+  // Escape dots so they aren't treated as regex wildcards.
+  const escapedUrl = process.env.VERCEL_URL.replace(/\./g, "\\.");
+  // Match the exact production URL.
+  ALLOWED_ORIGINS.push(new RegExp(`^https://${escapedUrl}$`));
+
+  // Also allow all Git-branch previews for this project.
+  // VERCEL_URL is typically: <project>-<hash>-<team>.vercel.app
+  // We extract the project prefix (everything before the first "-git-" or first "-<hash>").
+  const projectPrefix = process.env.VERCEL_URL.split(/[-_][0-9a-f]{8,}/)[0];
+  if (projectPrefix && projectPrefix !== process.env.VERCEL_URL) {
+    const escapedPrefix = projectPrefix.replace(/\./g, "\\.");
+    // Matches: https://<project>-<anything>.vercel.app
+    ALLOWED_ORIGINS.push(new RegExp(`^https://${escapedPrefix}-[^.]+\\.vercel\\.app$`));
+  }
+}
+
+// Allow localhost during development.
+if (process.env.NODE_ENV !== "production") {
+  ALLOWED_ORIGINS.push(/^http:\/\/localhost(:\d+)?$/);
 }
 
 app.use(
@@ -57,7 +78,7 @@ app.use(
       callback(new Error(`CORS: origin ${origin} not allowed`));
     },
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key"],
     credentials: true,
   }),
 );
