@@ -2,6 +2,38 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const FETCH_TIMEOUT_MS = 12000;
 
+// ── FIX: Added missing WEB_TOOLS export ───────────────────────────────────────
+export const WEB_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the web for current information, news, prices, events, or any real-time data.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query." },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_url",
+      description: "Fetch and read the content of a specific URL.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The full URL to fetch." },
+        },
+        required: ["url"],
+      },
+    },
+  },
+];
+
 function stripHtml(html: string): string {
   let text = html.replace(/<script[\s\S]*?<\/script>/gi, "");
   text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
