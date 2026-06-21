@@ -2,8 +2,8 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from "
 
 export type Theme = "dark" | "light";
 export type Model =
-  | "deepseek/deepseek-v4-flash"
-  | "deepseek/deepseek-v4-pro"
+  | "deepseek/deepseek-chat"
+  | "deepseek/deepseek-r1"
   | "black-forest-labs/flux-1-schnell";
 
 interface AppContextType {
@@ -16,8 +16,8 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | null>(null);
 
 const VALID_MODELS: Model[] = [
-  "deepseek/deepseek-v4-flash",
-  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-chat",
+  "deepseek/deepseek-r1",
   "black-forest-labs/flux-1-schnell",
 ];
 
@@ -28,7 +28,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [model, setModelState] = useState<Model>(() => {
     const saved = localStorage.getItem("model") as Model;
-    return VALID_MODELS.includes(saved) ? saved : "deepseek/deepseek-v4-flash";
+    return VALID_MODELS.includes(saved) ? saved : "deepseek/deepseek-chat";
   });
 
   useEffect(() => {
