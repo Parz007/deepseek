@@ -803,7 +803,7 @@ export default function Chat() {
       setOptimisticUser("");
       setOptimisticImages([]);
     }
-  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, createConversation, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
+  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
 
   const imagesLoading = imageLoadingCount > 0;
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !isStreaming && !isLimited && !imagesLoading;
