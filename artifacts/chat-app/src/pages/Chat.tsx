@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
-import { useGetConversation, useCreateConversation, getListConversationsQueryKey } from "@workspace/api-client-react";
+import { useGetConversation, getListConversationsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
@@ -465,7 +465,6 @@ export default function Chat() {
   const clientId = getClientId();
 
   const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId } });
-  const createConversation = useCreateConversation();
 
   const [messages, setMessages] = useState<StreamMessage[]>([]);
   const [input, setInput] = useState("");
@@ -652,7 +651,12 @@ export default function Chat() {
     try {
       if (isNew) {
         const t = (userMessage.slice(0, 45) || "📷 Image") + (userMessage.length > 45 ? "…" : "");
-        const result = await createConversation.mutateAsync({ data: { title: t }, headers: { "X-Client-ID": clientId } } as any);
+        const convRes = await fetch(`${apiBase}/api/conversations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Client-ID": clientId },
+          body: JSON.stringify({ title: t }),
+        });
+        const result = await convRes.json();
         targetId = result.id;
         queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() });
       }
