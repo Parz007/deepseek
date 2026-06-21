@@ -16,7 +16,53 @@ function stripHtml(html: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-export async function webSearch(query: string): Promise<string> {
+async function tavilySearch(query: string, apiKey: string): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        search_depth: "basic",
+        include_answer: true,
+        include_raw_content: false,
+        max_results: 6,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(`Tavily HTTP ${res.status}`);
+    const data: any = await res.json();
+    const parts: string[] = [];
+    if (data.answer) {
+      parts.push(`**Direct answer:** ${data.answer}`);
+    }
+    if (Array.isArray(data.results) && data.results.length > 0) {
+      const snippets = (data.results as any[])
+        .slice(0, 6)
+        .map((r: any) => {
+          const lines = [`**${r.title || "Result"}**`];
+          if (r.url) lines.push(r.url);
+          if (r.content) lines.push(r.content.slice(0, 400).trim());
+          return lines.join("\n");
+        })
+        .filter(Boolean);
+      if (snippets.length) {
+        parts.push(`**Web results for "${query}":**\n\n${snippets.join("\n\n")}`);
+      }
+    }
+    if (parts.length) return parts.join("\n\n");
+    return `No results found for "${query}".`;
+  } catch (err: any) {
+    clearTimeout(timeout);
+    throw err;
+  }
+}
+
+async function ddgSearch(query: string): Promise<string> {
   try {
     const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&t=deepseek-chat`;
     const controller = new AbortController();
@@ -85,6 +131,18 @@ export async function webSearch(query: string): Promise<string> {
   }
 
   return `No results found for "${query}". Try rephrasing your search.`;
+}
+
+export async function webSearch(query: string): Promise<string> {
+  const tavilyKey = process.env.TAVILY_API_KEY;
+  if (tavilyKey) {
+    try {
+      return await tavilySearch(query, tavilyKey);
+    } catch (err: any) {
+      console.warn("[webSearch] Tavily failed, falling back to DDG:", err?.message);
+    }
+  }
+  return ddgSearch(query);
 }
 
 export async function fetchUrl(url: string): Promise<string> {
@@ -218,4 +276,17 @@ export async function getStockPrice(symbol: string): Promise<string> {
   } catch (err: any) {
     return `Stock price fetch failed: ${err?.message || String(err)}`;
   }
+}
+
+export function getCurrentDatetime(): string {
+  const now = new Date();
+  const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const dayName = days[now.getUTCDay()];
+  const monthName = months[now.getUTCMonth()];
+  const date = now.getUTCDate();
+  const year = now.getUTCFullYear();
+  const hours = String(now.getUTCHours()).padStart(2, "0");
+  const minutes = String(now.getUTCMinutes()).padStart(2, "0");
+  return `Current date and time (UTC): ${dayName}, ${monthName} ${date}, ${year} at ${hours}:${minutes} UTC`;
 }
