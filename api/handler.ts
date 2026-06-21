@@ -232,12 +232,12 @@ const rateLimitMap = new Map<string, number[]>();
 const inFlightRequests = new Set<string>();
 
 const ALLOWED_MODELS = [
-  "deepseek/deepseek-v4-flash",
-  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-chat",
+  "deepseek/deepseek-r1",
   "qwen/qwen2.5-vl-72b-instruct",
 ] as const;
 type AllowedModel = (typeof ALLOWED_MODELS)[number];
-const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-v4-flash"];
+const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-chat"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1014,6 +1014,7 @@ app.post("/api/telegram/webhook", async (req, res) => {
   }
 
   if (msg?.text?.startsWith("/start")) {
+    res.json({ ok: true }); // respond immediately so Telegram does not retry
     const userChatId = msg.chat.id;
     const firstName = msg.from?.first_name || "there";
     try {
@@ -1032,7 +1033,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
     } catch (err) {
       console.error("[telegram] /start error");
     }
-    res.json({ ok: true });
     return;
   }
 
@@ -1059,6 +1059,7 @@ app.post("/api/telegram/webhook", async (req, res) => {
     });
   };
 
+  res.json({ ok: true }); // respond immediately so Telegram does not retry
   try {
     const db = getDb();
     if (data.startsWith("approve:")) {
@@ -1088,7 +1089,6 @@ app.post("/api/telegram/webhook", async (req, res) => {
   } catch (err) {
     console.error("[telegram] webhook callback error");
   }
-  res.json({ ok: true });
 });
 
 app.get("/api/telegram/setup", async (req, res) => {
@@ -1309,7 +1309,7 @@ app.post(
 
     const selectedModel: AllowedModel = (ALLOWED_MODELS as readonly string[]).includes(model ?? "")
       ? (model as AllowedModel)
-      : "deepseek/deepseek-v4-flash";
+      : "deepseek/deepseek-chat";
 
     try {
       const db = getDb();
@@ -1334,14 +1334,14 @@ app.post(
 
       let effectiveModel: AllowedModel = isUserActive
         ? selectedModel
-        : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "deepseek/deepseek-v4-flash";
+        : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "deepseek/deepseek-chat";
 
-      if (isUserActive && effectiveModel === "deepseek/deepseek-v4-flash" && isComplexQuery(messageContent)) {
-        effectiveModel = "deepseek/deepseek-v4-pro";
+      if (isUserActive && effectiveModel === "deepseek/deepseek-chat" && isComplexQuery(messageContent)) {
+        effectiveModel = "deepseek/deepseek-r1";
         console.info(`[chat] auto-routed to deepseek-v4-pro`);
       }
 
-      const isPro = effectiveModel === "deepseek/deepseek-v4-pro";
+      const isPro = effectiveModel === "deepseek/deepseek-r1";
       const maxTokens = isPro ? MAX_TOKENS_PRO : MAX_TOKENS_FLASH;
 
       // Vision preprocessing
