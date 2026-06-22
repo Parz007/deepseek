@@ -560,7 +560,6 @@ const ALLOWED_MODELS = [
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
   "qwen/qwen3-vl-32b-instruct",
-  "qwen/qwen2.5-vl-72b-instruct",
 ] as const;
 type AllowedModel = (typeof ALLOWED_MODELS)[number];
 const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-v4-flash"];
