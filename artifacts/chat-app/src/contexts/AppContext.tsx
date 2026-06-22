@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+import { setClientIdGetter } from "@workspace/api-client-react";
 
 export type Theme = "dark" | "light";
 export type Model =
@@ -11,7 +11,6 @@ interface AppContextType {
   toggleTheme: () => void;
   model: Model;
   setModel: (m: Model) => void;
-  // Verified clientId — null while Telegram auth is in progress
   clientId: string | null;
   clientIdReady: boolean;
 }
@@ -25,21 +24,14 @@ const VALID_MODELS: Model[] = [
 ];
 
 // ── Telegram initData auth ────────────────────────────────────────────────────
-// Returns a verified clientId from the server when running inside a Telegram
-// Mini App, or generates/reuses a random UUID as a fallback for plain browsers.
 
 async function resolveClientId(): Promise<string> {
-  // Check if we already have a stored clientId
   const stored = localStorage.getItem("clientId");
 
-  // Detect Telegram Mini App context
   const tg = (window as any).Telegram?.WebApp;
   const initData: string | undefined = tg?.initData;
 
   if (initData) {
-    // We're inside a Telegram Mini App — validate initData with the server.
-    // The server returns a cryptographically verified clientId (e.g. "tg_123456789").
-    // Skip the round-trip if we already have a verified tg_ id stored.
     if (stored && stored.startsWith("tg_")) {
       return stored;
     }
@@ -51,9 +43,7 @@ async function resolveClientId(): Promise<string> {
 
       const res = await fetch(`${apiBase}/api/telegram/auth`, {
         method: "POST",
-        headers: {
-          "x-telegram-init-data": initData,
-        },
+        headers: { "x-telegram-init-data": initData },
       });
 
       if (res.ok) {
@@ -61,15 +51,12 @@ async function resolveClientId(): Promise<string> {
         localStorage.setItem("clientId", data.clientId);
         return data.clientId;
       }
-      // Auth failed (invalid initData / expired) — fall through to UUID fallback
       console.warn("[TgAuth] Server rejected initData:", res.status);
     } catch (err) {
       console.warn("[TgAuth] Auth request failed:", err);
     }
   }
 
-  // Fallback: plain browser or Telegram auth failed — use/generate a random UUID.
-  // This keeps the app functional outside Telegram.
   if (stored) return stored;
   const id = crypto.randomUUID();
   localStorage.setItem("clientId", id);
@@ -88,9 +75,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return VALID_MODELS.includes(saved) ? saved : "deepseek/deepseek-v4-flash";
   });
 
-  // clientId starts null (loading) until resolveClientId() completes
-  const [clientId, setClientId] = useState<string | null>(null);
-  const [clientIdReady, setClientIdReady] = useState(false);
+  // FIX 2: Read clientId synchronously from localStorage so returning users
+  // never see a loading spinner. For Telegram users or first-time visitors,
+  // we still resolve asynchronously and update once resolved.
+  const [clientId, setClientId] = useState<string | null>(() => {
+    try {
+      const stored = localStorage.getItem("clientId");
+      // Telegram users: tg_ id is valid immediately (no async needed)
+      // Plain browser users: UUID is valid immediately
+      return stored || null;
+    } catch {
+      return null;
+    }
+  });
+
+  // FIX 2: clientIdReady is true immediately if we already have a stored id.
+  // This removes the spinner for all returning users.
+  const [clientIdReady, setClientIdReady] = useState<boolean>(() => {
+    try {
+      return !!localStorage.getItem("clientId");
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     const root = document.documentElement;
@@ -104,9 +111,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("theme", theme);
   }, [theme]);
 
-  // Resolve the clientId once on mount (async — handles Telegram auth)
+  // Resolve clientId (handles Telegram auth and first-time UUID generation).
+  // FIX 1: After resolving, call setClientIdGetter so all generated API hooks
+  // automatically include x-client-id on every request — fixing empty history.
   useEffect(() => {
     resolveClientId().then(id => {
+      // FIX 1: Wire clientId into the generated React Query hooks.
+      // Every call to useListConversations(), useGetConversation(), etc.
+      // will now automatically include "x-client-id: <id>" header.
+      setClientIdGetter(() => id);
+
       setClientId(id);
       setClientIdReady(true);
     });
