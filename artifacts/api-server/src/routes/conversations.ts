@@ -80,12 +80,15 @@ const ENGLISH_LOCK_ASSISTANT = `Confirmed and committed. Every response I produc
 const ALLOWED_MODELS = [
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
-  "qwen/qwen2.5-vl-72b-instruct",
 ] as const;
 type AllowedModel = (typeof ALLOWED_MODELS)[number];
 
 const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-v4-flash"];
-const VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct";
+// Cheap multimodal model used ONLY to convert image → text description.
+// It never sees the app system prompt — only a fixed minimal prompt.
+const IMAGE_DESCRIPTION_MODEL = "google/gemini-3.1-flash-image-preview";
+const IMAGE_DESCRIPTION_PROMPT =
+  "Describe this image in detail. Do not add any opinions, greetings, or extra commentary. Output only the description.";
 
 // ── Tool status labels ────────────────────────────────────────────────────────
 
@@ -324,36 +327,58 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
         ? selectedModel
         : "deepseek/deepseek-v4-flash";
 
-    // Vision: describe attached image via vision model first
+    // Resolve API key early — needed for both image description and DeepSeek calls
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      res.status(503).json({ error: "Service unavailable" });
+      return;
+    }
+
+    // ── Step 1: image → text description via cheap multimodal model ──────────
+    // Uses a fixed minimal prompt only — the app system prompt is NOT sent here.
+    // The description is never shown to the user; it is injected as context for
+    // the DeepSeek call that follows.
+    // imageBase64 accepts both base64 data URLs ("data:image/...;base64,...")
+    // and plain HTTPS image URLs — OpenRouter handles both identically.
     let imageContext = "";
+    let imageProcessingFailed = false;
     if (imageBase64) {
       try {
-        const apiKey = process.env.OPENROUTER_API_KEY;
-        const visionController = new AbortController();
-        const visionTimeout = setTimeout(() => visionController.abort(), 15000);
-        const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        const descController = new AbortController();
+        const descTimeout = setTimeout(() => descController.abort(), 20000);
+        const descRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
           headers: buildOrHeaders(apiKey!),
           body: JSON.stringify({
-            model: VISION_MODEL,
-            max_tokens: 1000,
-            messages: [{
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageBase64 } },
-                { type: "text", text: "Describe this image in full detail. Transcribe all visible text exactly as it appears. Describe all objects, people, colors, layout, numbers, charts, diagrams, or any other observable information." },
-              ],
-            }],
+            model: IMAGE_DESCRIPTION_MODEL,
+            max_tokens: 1024,
+            temperature: 0.1,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "image_url", image_url: { url: imageBase64 } },
+                  { type: "text", text: IMAGE_DESCRIPTION_PROMPT },
+                ],
+              },
+            ],
           }),
-          signal: visionController.signal,
+          signal: descController.signal,
         });
-        clearTimeout(visionTimeout);
-        if (visionRes.ok) {
-          const visionData = (await visionRes.json()) as any;
-          imageContext = visionData.choices?.[0]?.message?.content ?? "";
+        clearTimeout(descTimeout);
+        if (descRes.ok) {
+          const descData = (await descRes.json()) as any;
+          const raw: string = descData.choices?.[0]?.message?.content ?? "";
+          imageContext = raw.trim();
+        } else {
+          imageProcessingFailed = true;
+          req.log.warn({ status: descRes.status }, "Image description model returned error");
         }
-      } catch (visionErr: any) {
-        if (visionErr?.name !== "AbortError") req.log.warn({ err: visionErr }, "Vision model failed");
+      } catch (descErr: any) {
+        imageProcessingFailed = true;
+        if (descErr?.name !== "AbortError") {
+          req.log.warn({ err: descErr }, "Image description call failed");
+        }
       }
     }
 
@@ -383,21 +408,23 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      res.write(`data: ${JSON.stringify({ error: "OPENROUTER_API_KEY not set" })}\n\n`);
-      res.end();
-      return;
-    }
-
+    // ── Step 2: build messages for DeepSeek ──────────────────────────────────
+    // If an image was sent, inject the plain-text description as context.
+    // DeepSeek never receives the raw image — only the description text.
+    // The Gemini model and its prompt are never exposed to the user.
     const openRouterMessages = history.map((m, idx) => {
       if (idx === history.length - 1 && m.role === "user" && imageBase64) {
-        const imageNote = imageContext
-          ? `[The user attached an image. Here is the full image analysis from a vision model:]\n${imageContext}`
-          : `[The user attached an image. The automatic vision analysis failed — you cannot see the image contents. Tell the user their image was received but could not be analyzed, and ask them to describe what they need help with.]`;
+        if (imageProcessingFailed || !imageContext) {
+          // Graceful fallback — no internal details revealed
+          return {
+            role: "user" as const,
+            content: `[Note: The user sent an image but it could not be processed. Inform them politely that you were unable to read the image and ask them to describe what they need help with.]\n\n[User's message:]\n${m.content}`,
+          };
+        }
+        // Inject description; DeepSeek responds using its full system prompt
         return {
           role: "user" as const,
-          content: `${imageNote}\n\n[User's question/message:]\n${m.content}`,
+          content: `[The user sent an image. Image description:\n${imageContext}]\n\n[User's message:]\n${m.content}`,
         };
       }
       return { role: m.role as "user" | "assistant", content: m.content };
