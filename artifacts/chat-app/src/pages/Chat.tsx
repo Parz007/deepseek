@@ -47,7 +47,6 @@ interface SubStatus {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const QWEN_MODEL: Model = "qwen/qwen3-vl-32b-instruct";
 const FREE_LIMIT = 20;
 const MAX_IMAGES = 1; // API accepts one imageBase64 per message
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
@@ -55,7 +54,6 @@ const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MODEL_LABELS: Record<Model, string> = {
   "deepseek/deepseek-v4-flash": "V4 Flash",
   "deepseek/deepseek-v4-pro": "V4 Pro",
-  "qwen/qwen3-vl-32b-instruct": "Qwen 3 VL",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -563,10 +561,8 @@ export default function Chat() {
     setImageLoadingCount(Math.max(0, pendingImageOps.current));
   }, []);
 
-  // Auto-switch to Qwen VL when an image is attached (vision model required)
   const handleImageAttach = () => {
     setImageError(null);
-    if (model !== QWEN_MODEL) setModel(QWEN_MODEL);
     fileInputRef.current?.click();
   };
 
@@ -880,7 +876,7 @@ export default function Chat() {
                 <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
                   style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
                   onClick={e => e.stopPropagation()}>
-                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] satisfies Model[]).map(m => (
+                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] satisfies Model[]).map(m => (
                     <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
                       className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
                       style={{
@@ -895,9 +891,6 @@ export default function Chat() {
                       )}
                       {m === "deepseek/deepseek-v4-pro" && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
-                      )}
-                      {m === QWEN_MODEL && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(198 80% 56% / 0.15)", color: "hsl(198 80% 45%)" }}>Vision</span>
                       )}
                     </button>
                   ))}
@@ -1133,7 +1126,7 @@ export default function Chat() {
             : isStreaming
               ? "Generating… click ■ to stop"
               : attachedImages.length > 0
-                ? "Image attached · Qwen Vision · Enter to send"
+                ? "Image attached · Enter to send"
                 : "Enter to send · Shift+Enter for new line"}
         </p>
       </footer>
