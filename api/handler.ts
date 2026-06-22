@@ -64,6 +64,14 @@ const subscriptionsTable = pgTable("subscriptions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+const adminAttemptsTable = pgTable("admin_attempts", {
+  id: serial("id").primaryKey(),
+  ip: text("ip").notNull().unique(),
+  attempts: integer("attempts").notNull().default(0),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 const userMemoryTable = pgTable("user_memory", {
   id: serial("id").primaryKey(),
   clientId: text("client_id").notNull().unique(),
@@ -130,6 +138,13 @@ async function ensureTables() {
         memory_text TEXT NOT NULL DEFAULT '',
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS admin_attempts (
+        id SERIAL PRIMARY KEY,
+        ip TEXT NOT NULL UNIQUE,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
     _migrated = true;
   } finally {
@@ -152,7 +167,8 @@ const RATE_LIMIT_MAX = 15;
 const rateLimitMap = new Map<string, number[]>();
 const inFlightRequests = new Set<string>();
 
-// Admin brute-force tracking: IP → { failCount, lockedUntil }
+// Admin brute-force tracking — DB-backed so it works across Vercel serverless instances.
+// In-memory map is a same-instance fast path to avoid DB on every check.
 const adminBruteMap = new Map<string, { count: number; until: number }>();
 const ADMIN_BRUTE_MAX = 5;
 const ADMIN_BRUTE_LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
@@ -200,32 +216,74 @@ function getClientId(req: import("express").Request): string | null {
   return id;
 }
 
-// ── Admin brute-force protection ─────────────────────────────────────────────
+// ── Admin brute-force protection — DB-backed (works across Vercel instances) ─
 function getClientIp(req: import("express").Request): string {
   const xff = req.headers["x-forwarded-for"];
   if (xff) return String(xff).split(",")[0].trim();
   return (req.socket as any)?.remoteAddress ?? "unknown";
 }
-// Returns: "ok" | "locked" | "unauthorized"
-function checkAdminAuth(req: import("express").Request): "ok" | "locked" | "unauthorized" {
+
+// DB-backed check: returns "ok" | "locked" | "unauthorized"
+async function checkAdminAuth(req: import("express").Request): Promise<"ok" | "locked" | "unauthorized"> {
   const secret = process.env.ADMIN_SECRET;
   const ip = getClientIp(req);
-  const now = Date.now();
-  const brute = adminBruteMap.get(ip);
-  if (brute && now < brute.until) return "locked";
-  if (brute && now >= brute.until) adminBruteMap.delete(ip);
-  if (!secret || req.headers["x-admin-key"] !== secret) {
-    const entry = adminBruteMap.get(ip) ?? { count: 0, until: 0 };
-    entry.count += 1;
-    if (entry.count >= ADMIN_BRUTE_MAX) {
-      entry.until = now + ADMIN_BRUTE_LOCKOUT_MS;
-      console.warn(`[admin] IP ${ip} locked out after ${ADMIN_BRUTE_MAX} failed attempts`);
+  const now = new Date();
+
+  // 1. Fast-path: same-instance cache check
+  const cached = adminBruteMap.get(ip);
+  if (cached && Date.now() < cached.until) return "locked";
+
+  try {
+    const db = getDb();
+    // 2. Authoritative DB check (handles distributed Vercel instances)
+    const [row] = await db.select().from(adminAttemptsTable).where(eq(adminAttemptsTable.ip, ip));
+    if (row?.lockedUntil && row.lockedUntil > now) {
+      adminBruteMap.set(ip, { count: row.attempts, until: row.lockedUntil.getTime() });
+      return "locked";
     }
-    adminBruteMap.set(ip, entry);
-    return "unauthorized";
+
+    // Constant-time comparison to prevent timing side-channel attacks
+    const provided = String(req.headers["x-admin-key"] ?? "");
+    const keyOk = !!secret && provided.length === secret.length &&
+      Buffer.from(provided).equals(Buffer.from(secret));
+
+    if (!keyOk) {
+      const newCount = (row?.attempts ?? 0) + 1;
+      const lockedUntil = newCount >= ADMIN_BRUTE_MAX
+        ? new Date(Date.now() + ADMIN_BRUTE_LOCKOUT_MS)
+        : null;
+      if (newCount >= ADMIN_BRUTE_MAX) {
+        console.warn(`[admin] IP ${ip} locked out after ${newCount} failed attempts`);
+      }
+      await db.insert(adminAttemptsTable)
+        .values({ ip, attempts: newCount, lockedUntil, updatedAt: now })
+        .onConflictDoUpdate({
+          target: adminAttemptsTable.ip,
+          set: { attempts: newCount, lockedUntil, updatedAt: now },
+        });
+      if (lockedUntil) adminBruteMap.set(ip, { count: newCount, until: lockedUntil.getTime() });
+      return "unauthorized";
+    }
+
+    // Success: reset attempts
+    if (row) {
+      await db.delete(adminAttemptsTable).where(eq(adminAttemptsTable.ip, ip));
+    }
+    adminBruteMap.delete(ip);
+    return "ok";
+  } catch {
+    // DB unavailable: fall back to in-memory map only
+    const entry = adminBruteMap.get(ip) ?? { count: 0, until: 0 };
+    if (Date.now() < entry.until) return "locked";
+    if (!secret || req.headers["x-admin-key"] !== secret) {
+      entry.count += 1;
+      if (entry.count >= ADMIN_BRUTE_MAX) entry.until = Date.now() + ADMIN_BRUTE_LOCKOUT_MS;
+      adminBruteMap.set(ip, entry);
+      return "unauthorized";
+    }
+    adminBruteMap.delete(ip);
+    return "ok";
   }
-  adminBruteMap.delete(ip); // reset on success
-  return "ok";
 }
 
 // ── Smart model routing ───────────────────────────────────────────────────────
@@ -641,10 +699,24 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key"],
   credentials: true,
 }));
-app.use(express.json({ limit: "20mb" }));
+app.use(express.json({ limit: "2mb" })); // 2MB cap prevents memory exhaustion
 // Guard: if body failed to parse (missing/wrong Content-Type), use empty object
 // This ensures all endpoints get a consistent `req.body` instead of undefined → 500.
 app.use((req, _res, next) => { if (req.body === undefined) req.body = {}; next(); });
+// Explicit OPTIONS preflight handler — must come BEFORE route definitions.
+// The cors() middleware sets ACAO headers for allowed origins; this ensures a
+// proper 204 response is sent instead of falling through to the 404 catch-all.
+app.options("*", cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    const ok = ALLOWED_ORIGINS.some(o => typeof o === "string" ? o === origin : o.test(origin));
+    callback(null, ok);
+  },
+  methods: ["GET", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key"],
+  credentials: true,
+  optionsSuccessStatus: 204,
+}));
 ensureTables().catch(console.error);
 
 // ── Health check ──────────────────────────────────────────────────────────────
@@ -655,7 +727,7 @@ app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });
 
 // Usage: curl -H "X-Admin-Key: <secret>" /api/admin
 app.get("/api/admin", async (req, res) => {
-  const adminResult = checkAdminAuth(req);
+  const adminResult = await checkAdminAuth(req);
   if (adminResult === "locked") {
     res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
     return;
@@ -703,7 +775,7 @@ app.get("/api/admin", async (req, res) => {
 });
 
 app.post("/api/admin/approve", async (req, res) => {
-  const adminResult = checkAdminAuth(req);
+  const adminResult = await checkAdminAuth(req);
   if (adminResult === "locked") {
     res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
     return;
@@ -733,7 +805,7 @@ app.post("/api/admin/approve", async (req, res) => {
 // ── Subscription ──────────────────────────────────────────────────────────────
 
 app.post("/api/admin/reject", async (req, res) => {
-  const adminResult = checkAdminAuth(req);
+  const adminResult = await checkAdminAuth(req);
   if (adminResult === "locked") {
     res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
     return;
@@ -945,7 +1017,7 @@ app.post("/api/telegram/webhook", async (req, res) => {
 });
 
 app.get("/api/telegram/setup", async (req, res) => {
-  const adminResult = checkAdminAuth(req);
+  const adminResult = await checkAdminAuth(req);
   if (adminResult === "locked") {
     res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
     return;
@@ -986,7 +1058,10 @@ app.get("/api/telegram/setup", async (req, res) => {
 app.post("/api/conversations", async (req, res) => {
   const { title } = req.body;
   const clientId = getClientId(req);
-  if (!title) { res.status(400).json({ error: "title required" }); return; }
+  if (!title || typeof title !== "string" || !title.trim()) {
+    res.status(400).json({ error: "title required" }); return;
+  }
+  if (title.length > 300) { res.status(400).json({ error: "title too long (max 300 chars)" }); return; }
   try {
     const db = getDb();
     const [row] = await db
