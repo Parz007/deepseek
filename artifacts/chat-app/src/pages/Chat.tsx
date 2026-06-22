@@ -456,6 +456,11 @@ export default function Chat() {
   const isNew = !params.id || params.id === "new";
   const convId = isNew ? null : parseInt(params.id, 10);
 
+  // FIX: useGetConversation must be called before any conditional return to comply
+  // with React's Rules of Hooks. clientIdReady is added to `enabled` so the query
+  // only fires once the clientId is known (same net behaviour, rules-compliant).
+  const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId && clientIdReady } });
+
   if (!clientIdReady) {
     return (
       <div style={{
@@ -467,8 +472,6 @@ export default function Chat() {
       </div>
     );
   }
-
-  const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId } });
 
   const [messages, setMessages] = useState<StreamMessage[]>([]);
   const [input, setInput] = useState("");
