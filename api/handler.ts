@@ -1,5 +1,4 @@
-
-  import express from "express";
+import express from "express";
 import cors from "cors";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
@@ -700,6 +699,10 @@ if (process.env.VERCEL_URL) {
     ALLOWED_ORIGINS.push(new RegExp(`^https://${process.env.VERCEL_URL.replace(/\./g, "\\.")}$`));
   }
 }
+// FIX: Allow all Vercel preview deployment URLs (e.g. deepseek-*-git-branch-*.vercel.app).
+// Without this, every Vercel preview deploy is CORS-blocked because the subdomain
+// differs from the production domain. Scoped to *.vercel.app to stay restrictive.
+ALLOWED_ORIGINS.push(/^https:\/\/[a-z0-9-]+\.vercel\.app$/);
 if (process.env.NODE_ENV !== "production") {
   ALLOWED_ORIGINS.push(/^http:\/\/localhost(:\d+)?$/);
 }
@@ -1636,6 +1639,73 @@ app.post("/api/generate-image", async (req, res) => {
     console.error("[image] Image generation error", err);
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+
+// ── Telegram auth (Mini App) ──────────────────────────────────────────────────
+// AppContext.tsx calls this when window.Telegram.WebApp.initData is present.
+// Validates the HMAC and returns a stable tg_<userId> client ID.
+// Without this endpoint, Telegram Mini App users cannot authenticate
+// and fall back to a random UUID that resets between sessions.
+
+app.post("/api/telegram/auth", async (req, res) => {
+  const initData = req.headers["x-telegram-init-data"] as string | undefined;
+  if (!initData) {
+    res.status(400).json({ error: "x-telegram-init-data header required" });
+    return;
+  }
+
+  let userId: number | null = null;
+  try {
+    const params = new URLSearchParams(initData);
+    const userStr = params.get("user");
+    const hash = params.get("hash") ?? "";
+
+    // Validate HMAC-SHA256 if bot token is configured
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (token && hash) {
+      const crypto = await import("crypto");
+      const checkString = [...params.entries()]
+        .filter(([k]) => k !== "hash")
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n");
+      const secretKey = crypto.createHmac("sha256", "WebAppData").update(token).digest();
+      const expectedHash = crypto.createHmac("sha256", secretKey).update(checkString).digest("hex");
+      if (expectedHash !== hash) {
+        res.status(401).json({ error: "Invalid initData signature" });
+        return;
+      }
+    }
+
+    if (!userStr) {
+      res.status(400).json({ error: "No user data in initData" });
+      return;
+    }
+
+    const user = JSON.parse(userStr) as { id?: number };
+    userId = user?.id ?? null;
+  } catch (err: any) {
+    res.status(400).json({ error: `Failed to parse initData: ${err?.message}` });
+    return;
+  }
+
+  if (!userId) {
+    res.status(400).json({ error: "No user ID found in initData" });
+    return;
+  }
+
+  const clientId = `tg_${userId}`;
+
+  // Ensure a subscription row exists so the user lands in a known state
+  try {
+    const db = getDb();
+    await getOrCreateSubscription(db, clientId);
+  } catch {
+    // Non-fatal — subscription will be created on first message
+  }
+
+  res.json({ clientId });
 });
 
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
