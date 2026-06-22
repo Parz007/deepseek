@@ -168,7 +168,7 @@ const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
-const VISION_MODEL = "qwen/qwen2.5-vl-72b-instruct";
+const VISION_MODEL = "qwen/qwen3-vl-32b-instruct";
 const MAX_TOKENS_FLASH = 800;
 const MAX_TOKENS_PRO = 4096;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -562,6 +562,7 @@ const ENGLISH_LOCK_ASSISTANT = `Confirmed and committed. Every response I produc
 const ALLOWED_MODELS = [
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
+  "qwen/qwen3-vl-32b-instruct",
   "qwen/qwen2.5-vl-72b-instruct",
 ] as const;
 type AllowedModel = (typeof ALLOWED_MODELS)[number];
@@ -1227,44 +1228,12 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     const isPro = effectiveModel === "deepseek/deepseek-v4-pro";
     const maxTokens = isPro ? MAX_TOKENS_PRO : MAX_TOKENS_FLASH;
 
-    // Vision preprocessing
-    let imageContext = "";
+    // Vision: when an image is attached, route to the vision model directly.
+    // No pre-pass needed — we pass the image inline in multimodal format,
+    // exactly like ChatGPT/Claude do. This avoids the slow two-step approach.
+    const imageContext = ""; // kept for type compat — no longer used
     if (imageBase64) {
-      try {
-        const apiKey = process.env.OPENROUTER_API_KEY;
-        const visionController = new AbortController();
-        const visionTimeout = setTimeout(() => visionController.abort(), 20_000);
-        const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
-            "X-Title": "DeepSeek Chat",
-          },
-          body: JSON.stringify({
-            model: VISION_MODEL,
-            max_tokens: 1000,
-            messages: [{
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageBase64 } },
-                { type: "text", text: "Describe this image in full detail. Transcribe all visible text exactly as it appears. Describe all objects, people, colors, layout, numbers, charts, diagrams, or any other observable information." },
-              ],
-            }],
-          }),
-          signal: visionController.signal,
-        });
-        clearTimeout(visionTimeout);
-        if (visionRes.ok) {
-          const visionData = (await visionRes.json()) as any;
-          imageContext = visionData.choices?.[0]?.message?.content || "";
-        } else {
-          console.error("[vision] API error:", visionRes.status, await visionRes.text());
-        }
-      } catch (visionErr: any) {
-        if (visionErr?.name !== "AbortError") console.error("[vision] failed:", visionErr?.message);
-      }
+      effectiveModel = VISION_MODEL;
     }
 
     // SECURITY: enforce ownership — reject if this conversation doesn't belong to this client
@@ -1314,12 +1283,13 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     const openRouterMessages: { role: "user" | "assistant"; content: string }[] = history.map((m, idx) => {
       if (idx === history.length - 1 && m.role === "user" && imageBase64) {
-        const imageNote = imageContext
-          ? `[The user attached an image. Here is the full image analysis from a vision model:]\n${imageContext}`
-          : `[The user attached an image. The automatic vision analysis failed — you cannot see the image contents. Tell the user their image was received but could not be analyzed, and ask them to describe what they need help with.]`;
+        // Pass image directly in multimodal format — the vision model sees it natively.
         return {
           role: "user" as const,
-          content: `${imageNote}\n\n[User's question/message:]\n${m.content}`,
+          content: [
+            { type: "image_url", image_url: { url: imageBase64 } },
+            { type: "text", text: m.content || "What do you see in this image? Describe it in detail." },
+          ] as any,
         };
       }
       return { role: m.role as "user" | "assistant", content: m.content };
