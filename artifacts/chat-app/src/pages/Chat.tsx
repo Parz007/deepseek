@@ -15,12 +15,17 @@ import type { Components } from "react-markdown";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface SseEvent {
-  type: "token" | "thinking" | "status" | "done" | "error";
-  content?: string;
-  text?: string;
-  done?: boolean;
-  message?: string;
-}
+    type: "token" | "thinking" | "status" | "tool_status" | "done" | "error";
+    content?: string;
+    text?: string;
+    label?: string;
+    tool?: string;
+    query?: string;
+    url?: string;
+    done?: boolean;
+    message?: string;
+  }
+  
 
 interface StatusStep {
   text: string;
@@ -750,16 +755,30 @@ export default function Chat() {
                 setStreamingThinking(fullThinking);
               }
 
-              if (evt.type === "status" && evt.text) {
-                if (!evt.done) {
-                  // Tool is starting — add a pending step with spinner
-                  liveSteps.push({ text: evt.text, done: false });
-                } else {
-                  // Tool finished — find the matching step and mark it done (checkmark)
-                  const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
-                  if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
+                            if (evt.type === "status" && evt.text) {
+                  if (!evt.done) {
+                    // Tool is starting — add a pending step with spinner
+                    liveSteps.push({ text: evt.text, done: false });
+                  } else {
+                    // Tool finished — find the matching step and mark it done (checkmark)
+                    const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
+                    if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
+                  }
+                  setStreamingSteps([...liveSteps]);
                 }
-                setStreamingSteps([...liveSteps]);
+
+                if (evt.type === "tool_status") {
+                  // conversations.ts sends { type: "tool_status", label, tool, query?, url? }
+                  const stepText = evt.label ?? `Running ${evt.tool ?? "tool"}…`;
+                  const alreadyDone = liveSteps.some(s => s.text === stepText && s.done);
+                  const alreadyPending = liveSteps.some(s => s.text === stepText && !s.done);
+                  if (!alreadyPending && !alreadyDone) {
+                    liveSteps.push({ text: stepText, done: false });
+                  } else if (alreadyPending) {
+                    const idx = [...liveSteps].reverse().findIndex(s => s.text === stepText && !s.done);
+                    if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
+                  }
+                  setStreamingSteps([...liveSteps]);
               }
 
               if (evt.type === "error") {
