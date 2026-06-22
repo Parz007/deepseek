@@ -1,4 +1,5 @@
-import express from "express";
+
+  import express from "express";
 import cors from "cors";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
@@ -1099,7 +1100,7 @@ app.get("/api/conversations", async (req, res) => {
       .select()
       .from(conversationsTable)
       .where(eq(conversationsTable.clientId, clientId))
-      .orderBy(asc(conversationsTable.createdAt));
+      .orderBy(desc(conversationsTable.createdAt)); // FIX: newest first so recent chats appear at top
     res.json(rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt })));
   } catch (err: any) {
     console.error("[conversations] list error:", err);
