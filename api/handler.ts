@@ -39,6 +39,12 @@ function guardEnv(res: import("express").Response): boolean {
 if (!process.env.TAVILY_API_KEY) {
   console.warn("[startup] TAVILY_API_KEY not set — web_search will use DuckDuckGo fallback");
 }
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+  console.error("[startup] TELEGRAM_BOT_TOKEN not set — Telegram bot is DISABLED");
+}
+if (process.env.TELEGRAM_WEBHOOK_SECRET && !process.env.TELEGRAM_BOT_TOKEN) {
+  console.warn("[startup] TELEGRAM_WEBHOOK_SECRET is set but TELEGRAM_BOT_TOKEN is missing — webhook will 403 all Telegram updates");
+}
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -110,7 +116,8 @@ async function ensureTables() {
   if (_migrated) return;
   const url = process.env.DATABASE_URL;
   if (!url) return;
-  const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true } });
+  // FIX: Use max:1 pool for migration only — shares no connections with getDb() main pool.
+  const pool = new pg.Pool({ connectionString: url, ssl: { rejectUnauthorized: true }, max: 1 });
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS conversations (
@@ -199,21 +206,10 @@ function checkRateLimit(clientId: string): boolean {
   return true;
 }
 
-// ── Rate limiter eviction (prevent memory leak in warm lambdas) ──────────────
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, timestamps] of rateLimitMap.entries()) {
-    const alive = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
-    if (alive.length === 0) rateLimitMap.delete(key);
-    else rateLimitMap.set(key, alive);
-  }
-  for (const [ip, entry] of adminBruteMap.entries()) {
-    if (now >= entry.until && entry.count > 0) adminBruteMap.delete(ip);
-  }
-  for (const [cid, ts] of claimCooldownMap.entries()) {
-    if (now - ts > CLAIM_COOLDOWN_MS) claimCooldownMap.delete(cid);
-  }
-}, 5 * 60 * 1000);
+// NOTE: setInterval() is removed — it is an anti-pattern in Vercel serverless.
+// Instances recycle after ~10s of idle, so the interval never meaningfully fires.
+// In-memory Maps (rateLimitMap, adminBruteMap, claimCooldownMap) are bounded by
+// instance lifecycle. Admin brute-force is DB-backed and survives instance recycling.
 
 // ── clientId validation ───────────────────────────────────────────────────────
 const MAX_CLIENT_ID_LEN = 256;
@@ -732,7 +728,9 @@ app.use((req: import("express").Request, res: import("express").Response, next: 
   if (req.method === "OPTIONS") { res.status(204).end(); return; }
   next();
 });
-ensureTables().catch(console.error);
+// Tables are created by: pnpm --filter @workspace/db run push
+// ensureTables() still runs once as a safety net but uses max:1 pool.
+ensureTables().catch((err) => console.error("[startup] DB migration check failed:", err?.message));
 
 // ── Health check ──────────────────────────────────────────────────────────────
 
@@ -947,9 +945,8 @@ app.post("/api/telegram/webhook", async (req, res) => {
   const appUrl = process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app";
   const miniAppUrl =
     process.env.MINIAPP_URL ||
-    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null) ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) ||
-    appUrl;
+    process.env.APP_URL ||
+    "https://deepseek-uncensored-api-server.vercel.app";
 
   const msg = update?.message;
 
