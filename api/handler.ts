@@ -21,11 +21,20 @@ import {
 // ── Env validation ────────────────────────────────────────────────────────────
 
 const REQUIRED_ENV = ["OPENROUTER_API_KEY", "DATABASE_URL"];
+const MISSING_ENV: string[] = [];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
-    console.error(`[startup] FATAL: Required env var ${key} is not set. Exiting.`);
-    process.exit(1);
+    console.error(`[startup] MISSING required env var: ${key}`);
+    MISSING_ENV.push(key);
   }
+}
+
+function guardEnv(res: import("express").Response): boolean {
+  if (MISSING_ENV.length > 0) {
+    res.status(503).json({ error: "Server misconfigured", missing: MISSING_ENV });
+    return false;
+  }
+  return true;
 }
 if (!process.env.TAVILY_API_KEY) {
   console.warn("[startup] TAVILY_API_KEY not set — web_search will use DuckDuckGo fallback");
@@ -680,10 +689,19 @@ async function executeTool(name: string, args: Record<string, string>): Promise<
 const app = express();
 
 // ── CORS — restricted to known origins only ───────────────────────────────────
-const ALLOWED_ORIGINS: (string | RegExp)[] = ["https://web.telegram.org"];
-if (process.env.APP_URL) ALLOWED_ORIGINS.push(process.env.APP_URL);
+const PRODUCTION_DOMAIN = "https://deepseek-uncensored-api-server.vercel.app";
+const ALLOWED_ORIGINS: (string | RegExp)[] = [
+  "https://web.telegram.org",
+  PRODUCTION_DOMAIN,
+];
+if (process.env.APP_URL && process.env.APP_URL !== PRODUCTION_DOMAIN) {
+  ALLOWED_ORIGINS.push(process.env.APP_URL);
+}
 if (process.env.VERCEL_URL) {
-  ALLOWED_ORIGINS.push(new RegExp(`^https://${process.env.VERCEL_URL.replace(/\./g, "\\.")}$`));
+  const vUrl = `https://${process.env.VERCEL_URL}`;
+  if (vUrl !== PRODUCTION_DOMAIN) {
+    ALLOWED_ORIGINS.push(new RegExp(`^https://${process.env.VERCEL_URL.replace(/\./g, "\\.")}$`));
+  }
 }
 if (process.env.NODE_ENV !== "production") {
   ALLOWED_ORIGINS.push(/^http:\/\/localhost(:\d+)?$/);
@@ -718,6 +736,7 @@ ensureTables().catch(console.error);
 // ── Health check ──────────────────────────────────────────────────────────────
 
 app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });
+app.get("/api/health", (_req, res) => { res.json({ status: "ok" }); });
 
 // ── Admin ───────────────────────────────────────────────────────────────────────
 
@@ -825,6 +844,7 @@ app.post("/api/admin/reject", async (req, res) => {
 });
 
 app.get("/api/subscription/status", async (req, res) => {
+  if (!guardEnv(res)) return;
   const clientId = getClientId(req);
   if (!clientId) { res.status(400).json({ error: "x-client-id header required (max 256 chars)" }); return; }
   try {
@@ -1091,6 +1111,7 @@ app.get("/api/conversations", async (req, res) => {
 
 app.get("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "invalid conversation id" }); return; }
   const clientId = getClientId(req);
   if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
   try {
@@ -1126,6 +1147,7 @@ app.get("/api/conversations/:id", async (req, res) => {
 
 app.delete("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "invalid conversation id" }); return; }
   const clientId = getClientId(req);
   // SECURITY: require clientId and enforce ownership
   if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
@@ -1147,6 +1169,7 @@ app.delete("/api/conversations/:id", async (req, res) => {
 
 app.post("/api/conversations/:id/messages", async (req, res) => {
   const convId = Number(req.params.id);
+  if (!Number.isInteger(convId) || convId <= 0) { res.status(400).json({ error: "invalid conversation id" }); return; }
   const { content, model, userPrompt, imageBase64 } = req.body;
   const clientId = (req.headers["x-client-id"] as string) || "anonymous";
   const reqKey = `${clientId}:${convId}`;
