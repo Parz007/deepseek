@@ -152,6 +152,15 @@ const RATE_LIMIT_MAX = 15;
 const rateLimitMap = new Map<string, number[]>();
 const inFlightRequests = new Set<string>();
 
+// Admin brute-force tracking: IP → { failCount, lockedUntil }
+const adminBruteMap = new Map<string, { count: number; until: number }>();
+const ADMIN_BRUTE_MAX = 5;
+const ADMIN_BRUTE_LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+// Subscription claim cooldown: clientId → lastClaimTs
+const claimCooldownMap = new Map<string, number>();
+const CLAIM_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour between claims per client
+
 // ── Rate limiter ──────────────────────────────────────────────────────────────
 
 function checkRateLimit(clientId: string): boolean {
@@ -173,14 +182,50 @@ setInterval(() => {
     if (alive.length === 0) rateLimitMap.delete(key);
     else rateLimitMap.set(key, alive);
   }
+  for (const [ip, entry] of adminBruteMap.entries()) {
+    if (now >= entry.until && entry.count > 0) adminBruteMap.delete(ip);
+  }
+  for (const [cid, ts] of claimCooldownMap.entries()) {
+    if (now - ts > CLAIM_COOLDOWN_MS) claimCooldownMap.delete(cid);
+  }
 }, 5 * 60 * 1000);
 
-// ── Admin auth helper — use X-Admin-Key header, NOT ?key= query param ─────────
-// Header-based auth keeps the secret out of server logs and browser history.
-function checkAdminAuth(req: import("express").Request): boolean {
+// ── clientId validation ───────────────────────────────────────────────────────
+const MAX_CLIENT_ID_LEN = 256;
+function getClientId(req: import("express").Request): string | null {
+  const raw = req.headers["x-client-id"];
+  if (!raw || typeof raw !== "string") return null;
+  const id = raw.trim();
+  if (id.length === 0 || id.length > MAX_CLIENT_ID_LEN) return null;
+  return id;
+}
+
+// ── Admin brute-force protection ─────────────────────────────────────────────
+function getClientIp(req: import("express").Request): string {
+  const xff = req.headers["x-forwarded-for"];
+  if (xff) return String(xff).split(",")[0].trim();
+  return (req.socket as any)?.remoteAddress ?? "unknown";
+}
+// Returns: "ok" | "locked" | "unauthorized"
+function checkAdminAuth(req: import("express").Request): "ok" | "locked" | "unauthorized" {
   const secret = process.env.ADMIN_SECRET;
-  if (!secret) return false;
-  return req.headers["x-admin-key"] === secret;
+  const ip = getClientIp(req);
+  const now = Date.now();
+  const brute = adminBruteMap.get(ip);
+  if (brute && now < brute.until) return "locked";
+  if (brute && now >= brute.until) adminBruteMap.delete(ip);
+  if (!secret || req.headers["x-admin-key"] !== secret) {
+    const entry = adminBruteMap.get(ip) ?? { count: 0, until: 0 };
+    entry.count += 1;
+    if (entry.count >= ADMIN_BRUTE_MAX) {
+      entry.until = now + ADMIN_BRUTE_LOCKOUT_MS;
+      console.warn(`[admin] IP ${ip} locked out after ${ADMIN_BRUTE_MAX} failed attempts`);
+    }
+    adminBruteMap.set(ip, entry);
+    return "unauthorized";
+  }
+  adminBruteMap.delete(ip); // reset on success
+  return "ok";
 }
 
 // ── Smart model routing ───────────────────────────────────────────────────────
@@ -590,13 +635,16 @@ app.use(cors({
     if (!origin) return callback(null, true); // server-to-server (Telegram webhooks, etc.)
     const ok = ALLOWED_ORIGINS.some(o => typeof o === "string" ? o === origin : o.test(origin));
     if (ok) return callback(null, true);
-    callback(new Error("CORS not allowed"));
+    callback(null, false); // omit ACAO header — browser enforces the block
   },
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key"],
   credentials: true,
 }));
 app.use(express.json({ limit: "20mb" }));
+// Guard: if body failed to parse (missing/wrong Content-Type), use empty object
+// This ensures all endpoints get a consistent `req.body` instead of undefined → 500.
+app.use((req, _res, next) => { if (req.body === undefined) req.body = {}; next(); });
 ensureTables().catch(console.error);
 
 // ── Health check ──────────────────────────────────────────────────────────────
@@ -607,7 +655,12 @@ app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });
 
 // Usage: curl -H "X-Admin-Key: <secret>" /api/admin
 app.get("/api/admin", async (req, res) => {
-  if (!checkAdminAuth(req)) {
+  const adminResult = checkAdminAuth(req);
+  if (adminResult === "locked") {
+    res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
+    return;
+  }
+  if (adminResult !== "ok") {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -650,7 +703,12 @@ app.get("/api/admin", async (req, res) => {
 });
 
 app.post("/api/admin/approve", async (req, res) => {
-  if (!checkAdminAuth(req)) {
+  const adminResult = checkAdminAuth(req);
+  if (adminResult === "locked") {
+    res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
+    return;
+  }
+  if (adminResult !== "ok") {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -675,7 +733,12 @@ app.post("/api/admin/approve", async (req, res) => {
 // ── Subscription ──────────────────────────────────────────────────────────────
 
 app.post("/api/admin/reject", async (req, res) => {
-  if (!checkAdminAuth(req)) {
+  const adminResult = checkAdminAuth(req);
+  if (adminResult === "locked") {
+    res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
+    return;
+  }
+  if (adminResult !== "ok") {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -694,8 +757,8 @@ app.post("/api/admin/reject", async (req, res) => {
 });
 
 app.get("/api/subscription/status", async (req, res) => {
-  const clientId = req.headers["x-client-id"] as string;
-  if (!clientId) { res.status(400).json({ error: "X-Client-ID header required" }); return; }
+  const clientId = getClientId(req);
+  if (!clientId) { res.status(400).json({ error: "x-client-id header required (max 256 chars)" }); return; }
   try {
     const db = getDb();
     const sub = await getOrCreateSubscription(db, clientId);
@@ -710,8 +773,15 @@ app.get("/api/subscription/status", async (req, res) => {
 });
 
 app.post("/api/subscription/claim", async (req, res) => {
-  const clientId = req.headers["x-client-id"] as string;
-  if (!clientId) { res.status(400).json({ error: "X-Client-ID header required" }); return; }
+  const clientId = getClientId(req);
+  if (!clientId) { res.status(400).json({ error: "x-client-id header required (max 256 chars)" }); return; }
+  // Rate-limit claims: max 1 per hour per clientId (prevents Telegram notification spam)
+  const lastClaim = claimCooldownMap.get(clientId);
+  if (lastClaim && Date.now() - lastClaim < CLAIM_COOLDOWN_MS) {
+    const waitMins = Math.ceil((CLAIM_COOLDOWN_MS - (Date.now() - lastClaim)) / 60_000);
+    res.status(429).json({ error: `Please wait ${waitMins} minute(s) before submitting another claim.` });
+    return;
+  }
   const { plan, txHash, network } = req.body;
   if (!plan || !txHash || !network) {
     res.status(400).json({ error: "plan, txHash, and network are required" });
@@ -758,6 +828,7 @@ app.post("/api/subscription/claim", async (req, res) => {
         ]],
       });
     }
+    claimCooldownMap.set(clientId, Date.now());
     res.json({ success: true, status: "pending" });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -874,7 +945,12 @@ app.post("/api/telegram/webhook", async (req, res) => {
 });
 
 app.get("/api/telegram/setup", async (req, res) => {
-  if (!checkAdminAuth(req)) {
+  const adminResult = checkAdminAuth(req);
+  if (adminResult === "locked") {
+    res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
+    return;
+  }
+  if (adminResult !== "ok") {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -909,7 +985,7 @@ app.get("/api/telegram/setup", async (req, res) => {
 
 app.post("/api/conversations", async (req, res) => {
   const { title } = req.body;
-  const clientId = req.headers["x-client-id"] as string | undefined;
+  const clientId = getClientId(req);
   if (!title) { res.status(400).json({ error: "title required" }); return; }
   try {
     const db = getDb();
@@ -925,9 +1001,9 @@ app.post("/api/conversations", async (req, res) => {
 });
 
 app.get("/api/conversations", async (req, res) => {
-  const clientId = req.headers["x-client-id"] as string | undefined;
+  const clientId = getClientId(req);
   // SECURITY: always require clientId — never return all conversations
-  if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
+  if (!clientId) { res.status(401).json({ error: "x-client-id header required (max 256 chars)" }); return; }
   try {
     const db = getDb();
     const rows = await db
@@ -944,9 +1020,13 @@ app.get("/api/conversations", async (req, res) => {
 
 app.get("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
+  const clientId = getClientId(req);
+  if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
   try {
     const db = getDb();
-    const [conv] = await db.select().from(conversationsTable).where(eq(conversationsTable.id, id));
+    // SECURITY: enforce ownership — clientId must own the conversation
+    const [conv] = await db.select().from(conversationsTable)
+      .where(and(eq(conversationsTable.id, id), eq(conversationsTable.clientId, clientId)));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
     const msgs = await db
       .select()
@@ -975,7 +1055,7 @@ app.get("/api/conversations/:id", async (req, res) => {
 
 app.delete("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const clientId = req.headers["x-client-id"] as string | undefined;
+  const clientId = getClientId(req);
   // SECURITY: require clientId and enforce ownership
   if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
   try {
@@ -1093,7 +1173,9 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       }
     }
 
-    const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable).where(eq(conversationsTable.id, convId));
+    // SECURITY: enforce ownership — reject if this conversation doesn't belong to this client
+    const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable)
+      .where(and(eq(conversationsTable.id, convId), eq(conversationsTable.clientId, clientId)));
     if (!conv) { res.status(404).json({ error: "Not found" }); return; }
 
     await db.insert(messagesTable).values({
@@ -1379,7 +1461,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
 app.post("/api/generate-image", async (req, res) => {
   const { prompt, imageBase64, conversationId: existingConvId, conversationTitle } = req.body;
-  const clientId = req.headers["x-client-id"] as string | undefined;
+  const clientId = getClientId(req);
   // SECURITY: require clientId — image generation costs money per call
   if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
 
@@ -1412,19 +1494,27 @@ app.post("/api/generate-image", async (req, res) => {
       ? [{ type: "image_url", image_url: { url: imageBase64 } }, { type: "text", text: textContent }]
       : textContent;
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
-        "X-Title": "DeepSeek Chat",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash-image",
-        messages: [{ role: "user", content: messageContent }],
-      }),
-    });
+    const imgController = new AbortController();
+    const imgTimeout = setTimeout(() => imgController.abort(), 30_000);
+    let response: Response;
+    try {
+      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": process.env.APP_URL || "https://deepseek-uncensored-api-server.vercel.app",
+          "X-Title": "DeepSeek Chat",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash-image",
+          messages: [{ role: "user", content: messageContent }],
+        }),
+        signal: imgController.signal,
+      });
+    } finally {
+      clearTimeout(imgTimeout);
+    }
 
     if (!response.ok) {
       const errText = await response.text();
