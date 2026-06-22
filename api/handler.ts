@@ -165,6 +165,24 @@ function checkRateLimit(clientId: string): boolean {
   return true;
 }
 
+// ── Rate limiter eviction (prevent memory leak in warm lambdas) ──────────────
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamps] of rateLimitMap.entries()) {
+    const alive = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (alive.length === 0) rateLimitMap.delete(key);
+    else rateLimitMap.set(key, alive);
+  }
+}, 5 * 60 * 1000);
+
+// ── Admin auth helper — use X-Admin-Key header, NOT ?key= query param ─────────
+// Header-based auth keeps the secret out of server logs and browser history.
+function checkAdminAuth(req: import("express").Request): boolean {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret) return false;
+  return req.headers["x-admin-key"] === secret;
+}
+
 // ── Smart model routing ───────────────────────────────────────────────────────
 
 const COMPLEX_PATTERNS = [
@@ -557,15 +575,39 @@ async function executeTool(name: string, args: Record<string, string>): Promise<
 // ── App ───────────────────────────────────────────────────────────────────────
 
 const app = express();
-app.use(cors());
+
+// ── CORS — restricted to known origins only ───────────────────────────────────
+const ALLOWED_ORIGINS: (string | RegExp)[] = ["https://web.telegram.org"];
+if (process.env.APP_URL) ALLOWED_ORIGINS.push(process.env.APP_URL);
+if (process.env.VERCEL_URL) {
+  ALLOWED_ORIGINS.push(new RegExp(`^https://${process.env.VERCEL_URL.replace(/\./g, "\\.")}$`));
+}
+if (process.env.NODE_ENV !== "production") {
+  ALLOWED_ORIGINS.push(/^http:\/\/localhost(:\d+)?$/);
+}
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // server-to-server (Telegram webhooks, etc.)
+    const ok = ALLOWED_ORIGINS.some(o => typeof o === "string" ? o === origin : o.test(origin));
+    if (ok) return callback(null, true);
+    callback(new Error("CORS not allowed"));
+  },
+  methods: ["GET", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key"],
+  credentials: true,
+}));
 app.use(express.json({ limit: "20mb" }));
 ensureTables().catch(console.error);
 
-// ── Admin ─────────────────────────────────────────────────────────────────────
+// ── Health check ──────────────────────────────────────────────────────────────
 
+app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });
+
+// ── Admin ───────────────────────────────────────────────────────────────────────
+
+// Usage: curl -H "X-Admin-Key: <secret>" /api/admin
 app.get("/api/admin", async (req, res) => {
-  const secret = process.env.ADMIN_SECRET;
-  if (!secret || req.query.key !== secret) {
+  if (!checkAdminAuth(req)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -608,8 +650,7 @@ app.get("/api/admin", async (req, res) => {
 });
 
 app.post("/api/admin/approve", async (req, res) => {
-  const secret = process.env.ADMIN_SECRET;
-  if (!secret || req.query.key !== secret) {
+  if (!checkAdminAuth(req)) {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
@@ -632,6 +673,25 @@ app.post("/api/admin/approve", async (req, res) => {
 });
 
 // ── Subscription ──────────────────────────────────────────────────────────────
+
+app.post("/api/admin/reject", async (req, res) => {
+  if (!checkAdminAuth(req)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const { clientId } = req.body;
+  if (!clientId) { res.status(400).json({ error: "clientId required" }); return; }
+  try {
+    const db = getDb();
+    await db
+      .update(subscriptionsTable)
+      .set({ status: "rejected", updatedAt: sql`now()` })
+      .where(eq(subscriptionsTable.clientId, clientId));
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get("/api/subscription/status", async (req, res) => {
   const clientId = req.headers["x-client-id"] as string;
@@ -662,6 +722,15 @@ app.post("/api/subscription/claim", async (req, res) => {
   if (!walletMap[network]) { res.status(400).json({ error: "Invalid network" }); return; }
   try {
     const db = getDb();
+    // Guard: do NOT overwrite an already-active subscription back to "pending".
+    const [existing] = await db
+      .select({ status: subscriptionsTable.status })
+      .from(subscriptionsTable)
+      .where(eq(subscriptionsTable.clientId, clientId));
+    if (existing?.status === "active") {
+      res.status(409).json({ error: "Your subscription is already active. No action needed." });
+      return;
+    }
     await db
       .insert(subscriptionsTable)
       .values({ clientId, status: "pending", plan, txHash, network })
@@ -700,6 +769,17 @@ app.post("/api/subscription/claim", async (req, res) => {
 app.get("/api/telegram/webhook", (_req, res) => res.json({ ok: true }));
 
 app.post("/api/telegram/webhook", async (req, res) => {
+  // Validate TELEGRAM_WEBHOOK_SECRET if configured (set via /api/telegram/setup).
+  // Telegram sends this in X-Telegram-Bot-Api-Secret-Token header.
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (webhookSecret) {
+    const provided = req.headers["x-telegram-bot-api-secret-token"];
+    if (provided !== webhookSecret) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+  }
+
   const update = req.body;
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) { res.json({ ok: true }); return; }
@@ -794,6 +874,10 @@ app.post("/api/telegram/webhook", async (req, res) => {
 });
 
 app.get("/api/telegram/setup", async (req, res) => {
+  if (!checkAdminAuth(req)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const appUrl =
     process.env.APP_URL ||
@@ -808,10 +892,14 @@ app.get("/api/telegram/setup", async (req, res) => {
     const r = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message", "callback_query"] }),
+      body: JSON.stringify({
+        url: webhookUrl,
+        allowed_updates: ["message", "callback_query"],
+        ...(process.env.TELEGRAM_WEBHOOK_SECRET ? { secret_token: process.env.TELEGRAM_WEBHOOK_SECRET } : {}),
+      }),
     });
     const data = await r.json();
-    res.json({ webhookUrl, telegramResponse: data });
+    res.json({ webhookUrl, secretConfigured: !!process.env.TELEGRAM_WEBHOOK_SECRET, telegramResponse: data });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -838,11 +926,15 @@ app.post("/api/conversations", async (req, res) => {
 
 app.get("/api/conversations", async (req, res) => {
   const clientId = req.headers["x-client-id"] as string | undefined;
+  // SECURITY: always require clientId — never return all conversations
+  if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
   try {
     const db = getDb();
-    const rows = clientId
-      ? await db.select().from(conversationsTable).where(eq(conversationsTable.clientId, clientId)).orderBy(asc(conversationsTable.createdAt))
-      : await db.select().from(conversationsTable).orderBy(asc(conversationsTable.createdAt));
+    const rows = await db
+      .select()
+      .from(conversationsTable)
+      .where(eq(conversationsTable.clientId, clientId))
+      .orderBy(asc(conversationsTable.createdAt));
     res.json(rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt })));
   } catch (err: any) {
     console.error("[conversations] list error:", err);
@@ -883,11 +975,14 @@ app.get("/api/conversations/:id", async (req, res) => {
 
 app.delete("/api/conversations/:id", async (req, res) => {
   const id = Number(req.params.id);
+  const clientId = req.headers["x-client-id"] as string | undefined;
+  // SECURITY: require clientId and enforce ownership
+  if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
   try {
     const db = getDb();
     const [row] = await db
       .delete(conversationsTable)
-      .where(eq(conversationsTable.id, id))
+      .where(and(eq(conversationsTable.id, id), eq(conversationsTable.clientId, clientId)))
       .returning({ id: conversationsTable.id });
     if (!row) { res.status(404).json({ error: "Not found" }); return; }
     res.status(204).send();
@@ -1285,6 +1380,8 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 app.post("/api/generate-image", async (req, res) => {
   const { prompt, imageBase64, conversationId: existingConvId, conversationTitle } = req.body;
   const clientId = req.headers["x-client-id"] as string | undefined;
+  // SECURITY: require clientId — image generation costs money per call
+  if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
 
   if ((!prompt || !prompt.trim()) && !imageBase64) {
     res.status(400).json({ error: "prompt or image required" });
@@ -1292,7 +1389,7 @@ app.post("/api/generate-image", async (req, res) => {
   }
 
   try {
-    if (clientId) {
+    {
       const db = getDb();
       const sub = await getOrCreateSubscription(db, clientId);
       const isActive =
