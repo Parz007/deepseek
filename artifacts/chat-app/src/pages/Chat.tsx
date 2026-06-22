@@ -4,7 +4,7 @@ import { useGetConversation, getListConversationsQueryKey } from "@workspace/api
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
-  Paperclip, X, Download, Lock, Crown, ChevronRight, Loader2,
+  Paperclip, X, Download, Lock, Crown, ChevronRight, Loader2, Square,
 } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
@@ -49,7 +49,7 @@ interface SubStatus {
 
 const QWEN_MODEL: Model = "qwen/qwen2.5-vl-72b-instruct";
 const FREE_LIMIT = 20;
-const MAX_IMAGES = 5;
+const MAX_IMAGES = 1; // API accepts one imageBase64 per message
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const MODEL_LABELS: Record<Model, string> = {
@@ -562,6 +562,13 @@ export default function Chat() {
     setImageLoadingCount(Math.max(0, pendingImageOps.current));
   }, []);
 
+  // Auto-switch to Qwen VL when an image is attached (vision model required)
+  const handleImageAttach = () => {
+    setImageError(null);
+    if (model !== QWEN_MODEL) setModel(QWEN_MODEL);
+    fileInputRef.current?.click();
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
@@ -780,6 +787,9 @@ export default function Chat() {
         return;
       }
 
+      // Clear optimistic before committing final messages to prevent flash
+      setOptimisticUser("");
+      setOptimisticImages([]);
       setMessages(prev => [...prev,
         { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
         {
@@ -804,8 +814,10 @@ export default function Chat() {
       setStreamingSteps([]);
       setOptimisticUser("");
       setOptimisticImages([]);
+      // Restore focus to textarea so user can type the next message immediately
+      setTimeout(() => textareaRef.current?.focus(), 50);
     }
-  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, queryClient, navigate, model, clientId, apiBase, fetchSubStatus]);
+  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, queryClient, navigate, model, clientId, apiBase, fetchSubStatus, setModel]);
 
   const imagesLoading = imageLoadingCount > 0;
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !isStreaming && !isLimited && !imagesLoading;
@@ -867,7 +879,7 @@ export default function Chat() {
                 <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
                   style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
                   onClick={e => e.stopPropagation()}>
-                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] as Model[]).map(m => (
+                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", QWEN_MODEL] satisfies Model[]).map(m => (
                     <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
                       className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
                       style={{
@@ -951,8 +963,8 @@ export default function Chat() {
           />
         )}
 
-        {/* Streaming assistant bubble */}
-        {isStreaming && (streamingSteps.length > 0 || streamingThinking || streamingToken || optimisticUser || optimisticImages.length > 0) && (
+        {/* Streaming assistant bubble — always visible once streaming starts */}
+        {isStreaming && (
           <div className="flex items-start gap-2.5">
             <AIAvatar />
             <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
@@ -1057,7 +1069,7 @@ export default function Chat() {
               />
 
               <button
-                onClick={() => { setImageError(null); fileInputRef.current?.click(); }}
+                onClick={handleImageAttach}
                 disabled={isStreaming || imagesLoading || attachedImages.length >= MAX_IMAGES}
                 title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : imagesLoading ? "Processing image…" : "Attach image"}
                 className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
@@ -1082,20 +1094,34 @@ export default function Chat() {
                 style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
               />
 
-              <button
-                onClick={handleSend}
-                disabled={!canSend}
-                title={imagesLoading ? "Waiting for images to process…" : undefined}
-                className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                style={{
-                  background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
-                  color: canSend ? "white" : "hsl(var(--muted-foreground))",
-                  boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
-                }}>
-                {imagesLoading
-                  ? <Loader2 size={15} className="animate-spin" />
-                  : <Send size={15} strokeWidth={2} />}
-              </button>
+              {isStreaming ? (
+                <button
+                  onClick={() => abortRef.current?.abort()}
+                  title="Stop generating"
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                  style={{
+                    background: "hsl(0 72% 51% / 0.12)",
+                    border: "1px solid hsl(0 72% 51% / 0.3)",
+                    color: "hsl(0 72% 51%)",
+                  }}>
+                  <Square size={13} strokeWidth={0} style={{ fill: "currentColor" }} />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!canSend}
+                  title={imagesLoading ? "Waiting for image to process…" : undefined}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                  style={{
+                    background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
+                    color: canSend ? "white" : "hsl(var(--muted-foreground))",
+                    boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
+                  }}>
+                  {imagesLoading
+                    ? <Loader2 size={15} className="animate-spin" />
+                    : <Send size={15} strokeWidth={2} />}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -1103,9 +1129,11 @@ export default function Chat() {
         <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
           {isLimited
             ? "Resets daily at midnight UTC"
-            : attachedImages.length > 0
-              ? `${attachedImages.length}/${MAX_IMAGES} images attached · Enter to send`
-              : "Enter to send · Shift+Enter for new line"}
+            : isStreaming
+              ? "Generating… click ■ to stop"
+              : attachedImages.length > 0
+                ? "Image attached · Qwen Vision · Enter to send"
+                : "Enter to send · Shift+Enter for new line"}
         </p>
       </footer>
 
