@@ -704,19 +704,15 @@ app.use(express.json({ limit: "2mb" })); // 2MB cap prevents memory exhaustion
 // This ensures all endpoints get a consistent `req.body` instead of undefined → 500.
 app.use((req, _res, next) => { if (req.body === undefined) req.body = {}; next(); });
 // Explicit OPTIONS preflight handler — must come BEFORE route definitions.
-// The cors() middleware sets ACAO headers for allowed origins; this ensures a
-// proper 204 response is sent instead of falling through to the 404 catch-all.
-app.options("*", cors({
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    const ok = ALLOWED_ORIGINS.some(o => typeof o === "string" ? o === origin : o.test(origin));
-    callback(null, ok);
-  },
-  methods: ["GET", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key"],
-  credentials: true,
-  optionsSuccessStatus: 204,
-}));
+// IMPORTANT: Express 5 + path-to-regexp v8 dropped support for bare "*" as a route
+// pattern, so app.options("*", ...) throws at startup and crashes the entire function.
+// Use a plain middleware instead — app.use(cors()) above already sets ACAO headers for
+// allowed origins and sends 204. This catches the remaining OPTIONS (blocked/no origin)
+// so they return 204 instead of falling through to the 404 catch-all.
+app.use((req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+  if (req.method === "OPTIONS") { res.status(204).end(); return; }
+  next();
+});
 ensureTables().catch(console.error);
 
 // ── Health check ──────────────────────────────────────────────────────────────
