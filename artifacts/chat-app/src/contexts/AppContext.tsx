@@ -6,7 +6,7 @@ export type Theme = "dark" | "light";
 export type Model =
   | "deepseek/deepseek-v4-flash"
   | "deepseek/deepseek-v4-pro"
-  | "qwen/qwen2.5-vl-72b-instruct";
+  | "qwen/qwen3-vl-32b-instruct";
 
 interface AppContextType {
   theme: Theme;
@@ -22,7 +22,7 @@ const AppContext = createContext<AppContextType | null>(null);
 const VALID_MODELS: Model[] = [
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
-  "qwen/qwen2.5-vl-72b-instruct",
+  "qwen/qwen3-vl-32b-instruct",
 ];
 
 // ── Telegram initData auth ────────────────────────────────────────────────────
