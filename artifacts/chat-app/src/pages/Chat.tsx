@@ -47,7 +47,7 @@ interface SubStatus {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const QWEN_MODEL: Model = "qwen/qwen2.5-vl-72b-instruct";
+const QWEN_MODEL: Model = "qwen/qwen3-vl-32b-instruct";
 const FREE_LIMIT = 20;
 const MAX_IMAGES = 1; // API accepts one imageBase64 per message
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
@@ -55,7 +55,7 @@ const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MODEL_LABELS: Record<Model, string> = {
   "deepseek/deepseek-v4-flash": "V4 Flash",
   "deepseek/deepseek-v4-pro": "V4 Pro",
-  "qwen/qwen2.5-vl-72b-instruct": "Qwen 2.5 VL",
+  "qwen/qwen3-vl-32b-instruct": "Qwen 3 VL",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -178,8 +178,9 @@ function MarkdownContent({ content, streaming }: { content: string; streaming?: 
 // ── Thinking block ────────────────────────────────────────────────────────────
 
 function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true); // auto-open so users see thinking in real-time
   if (!content && !streaming) return null;
+  const isOpen = streaming ? true : open; // always open while streaming
   return (
     <div className="mb-2 rounded-xl overflow-hidden"
       style={{ border: "1px solid hsl(var(--border) / 0.6)", background: "hsl(var(--muted) / 0.4)" }}>
@@ -188,13 +189,13 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
         className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
         style={{ color: "hsl(var(--muted-foreground))" }}>
         <span className="flex items-center gap-1.5 text-[11px] font-medium flex-1">
-          {streaming && !open
+          {streaming
             ? <Loader2 size={11} className="animate-spin flex-shrink-0" />
-            : <ChevronRight size={11} className="flex-shrink-0 transition-transform" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }} />}
+            : <ChevronRight size={11} className="flex-shrink-0 transition-transform" style={{ transform: isOpen ? "rotate(90deg)" : "rotate(0deg)" }} />}
           {streaming ? "Thinking…" : `Reasoning trace (${content.length} chars)`}
         </span>
       </button>
-      {open && (
+      {isOpen && (
         <div className="px-3 pb-3">
           <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words"
             style={{ color: "hsl(var(--muted-foreground))", fontFamily: "var(--app-font-mono)", margin: 0 }}>
@@ -987,11 +988,11 @@ export default function Chat() {
                         <span key={i} className="typing-dot inline-block w-1.5 h-1.5 rounded-full"
                           style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
                       ))}
-                      {optimisticImages.length > 0 && !streamingSteps.length && (
-                        <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                          Analyzing image…
-                        </span>
-                      )}
+                      <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
+                        {optimisticImages.length > 0 && !streamingSteps.length
+                          ? "Analyzing image…"
+                          : "Thinking…"}
+                      </span>
                     </div>
                   )
                 }
