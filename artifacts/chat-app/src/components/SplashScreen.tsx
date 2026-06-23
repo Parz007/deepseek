@@ -37,7 +37,7 @@ export default function SplashScreen({ onDone }: Props) {
             #123A66 0%, #0A1A33 45%, #02060F 100%);
         }
         .ds-caustics {
-          position:absolute; inset:0; z-index:2; opacity:.22;
+          position:absolute; inset:0; z-index:5; opacity:.22;
           mix-blend-mode:screen;
           background-image: repeating-linear-gradient(
             115deg, transparent 0 18px, rgba(159,216,255,.5) 19px 21px, transparent 22px 60px);
@@ -51,7 +51,7 @@ export default function SplashScreen({ onDone }: Props) {
         .ds-shaft {
           position:absolute; top:-10%; height:140%;
           background: linear-gradient(180deg, rgba(159,216,255,.16), rgba(159,216,255,0) 70%);
-          z-index:1; filter:blur(2px);
+          z-index:5; filter:blur(2px);
           animation: ds-swayShaft 9s ease-in-out infinite;
         }
         @keyframes ds-swayShaft {
@@ -82,29 +82,18 @@ export default function SplashScreen({ onDone }: Props) {
           90%  { opacity:.5; }
           100% { transform:translateY(-105vh) translateX(var(--drift,18px)) scale(.4); opacity:0; }
         }
-        .ds-whale-wrap {
-          position:absolute; top:50%; left:50%;
-          width:60vw; max-width:420px; min-width:240px; z-index:4;
-          transform:translate(-50%,-50%);
-          animation: ds-sinkDrift 7s ease-in-out infinite;
-          filter: drop-shadow(0 18px 34px rgba(5,15,35,.65));
-        }
-        .ds-whale-wrap video {
-          width:100%; height:auto; display:block;
-        }
-        @keyframes ds-sinkDrift {
-          0%   { transform:translate(-50%,-50%) translateY(-14px) rotate(-3deg); }
-          50%  { transform:translate(-50%,-50%) translateY(14px) rotate(2deg); }
-          100% { transform:translate(-50%,-50%) translateY(-14px) rotate(-3deg); }
+        .ds-whale-video {
+          position:absolute; inset:0; z-index:1;
+          width:100%; height:100%; object-fit:cover;
         }
         .ds-vignette {
-          position:absolute; inset:0; z-index:5; pointer-events:none;
+          position:absolute; inset:0; z-index:7; pointer-events:none;
           background: radial-gradient(ellipse 90% 70% at 50% 50%,
             transparent 55%, rgba(0,3,10,.55) 100%);
         }
         .ds-brand {
           position:absolute; left:0; right:0; bottom:9%;
-          z-index:6; text-align:center;
+          z-index:8; text-align:center;
           animation: ds-fadeUp 1.2s ease-out .3s both;
         }
         @keyframes ds-fadeUp {
@@ -145,7 +134,7 @@ export default function SplashScreen({ onDone }: Props) {
         <div className="ds-shaft" style={{ left:"38%", width:"26%", animationDelay:"-3s", opacity:0.7 }} />
         <div className="ds-shaft" style={{ left:"66%", width:"30%", animationDelay:"-6s", opacity:0.6 }} />
 
-        <div style={{ position:"absolute", inset:0, zIndex:1, overflow:"hidden",
+        <div style={{ position:"absolute", inset:0, zIndex:6, overflow:"hidden",
                       mixBlendMode:"screen" as const, opacity:.5 }}>
           {bands.map(b => (
             <div key={b.id} className="ds-band" style={{
@@ -156,15 +145,14 @@ export default function SplashScreen({ onDone }: Props) {
           ))}
         </div>
 
-        <div className="ds-whale-wrap">
-          <video
-            src={whaleVideo}
-            autoPlay
-            loop
-            muted
-            playsInline
-          />
-        </div>
+        <video
+          className="ds-whale-video"
+          src={whaleVideo}
+          autoPlay
+          loop
+          muted
+          playsInline
+        />
 
         <div style={{ position:"absolute", inset:0, zIndex:3, pointerEvents:"none" }}>
           {bubbles.map(b => (
