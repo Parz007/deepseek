@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import whaleVideo from "./whale.webm";
+import whaleVideo from "./A_sleek_blue_and_white_3D_whale_smoothly_swings_and_sways_with_graceful.webm";
 
 interface Props { onDone: () => void; }
 
