@@ -88,8 +88,10 @@ export default function SplashScreen({ onDone }: Props) {
         }
         .ds-vignette {
           position:absolute; inset:0; z-index:7; pointer-events:none;
-          background: radial-gradient(ellipse 90% 70% at 50% 50%,
-            transparent 55%, rgba(0,3,10,.55) 100%);
+          background:
+            radial-gradient(ellipse 58% 52% at 55% 46%,
+              transparent 30%, rgba(2,6,20,.92) 100%),
+            linear-gradient(to bottom, rgba(2,6,20,.6) 0%, transparent 22%, transparent 70%, rgba(2,6,20,.85) 100%);
         }
         .ds-brand {
           position:absolute; left:0; right:0; bottom:9%;
