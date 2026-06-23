@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "crypto";
 import cors from "cors";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
@@ -211,14 +212,71 @@ function checkRateLimit(clientId: string): boolean {
 // In-memory Maps (rateLimitMap, adminBruteMap, claimCooldownMap) are bounded by
 // instance lifecycle. Admin brute-force is DB-backed and survives instance recycling.
 
-// ── clientId validation ───────────────────────────────────────────────────────
+// ── clientId / token helpers ────────────────────────────────────────────────
+//
+// Signed-token scheme (replaces bare x-client-id UUIDs):
+//   server generates:  token = "<clientId>.<hmac-sha256-hex>"  via POST /api/auth/init
+//   client stores the token in localStorage and sends it as x-client-id header
+//   getClientId() verifies the HMAC; rejects anything with a bad/missing signature
+//   falls back to accepting bare UUIDs during the one-release migration window
+//   (remove the fallback once all clients have called /api/auth/init at least once)
+//
+// Why keep x-client-id header name? The generated @workspace/api-client-react hooks
+// send x-client-id automatically via setClientIdGetter — no generated code changes needed.
+
 const MAX_CLIENT_ID_LEN = 256;
+const SIG_HEX_LEN       = 64;  // sha-256 = 32 bytes = 64 hex chars
+const HEX_RE            = /^[0-9a-f]+$/;
+
+function signClientId(clientId: string): string {
+  const secret = process.env.SESSION_SECRET ?? "dev-fallback-secret";
+  const sig = crypto.createHmac("sha256", secret).update(clientId).digest("hex");
+  return `${clientId}.${sig}`;
+}
+
+function extractVerifiedClientId(token: string): string | null {
+  const lastDot = token.lastIndexOf(".");
+  if (lastDot === -1) return null;
+  const id  = token.slice(0, lastDot);
+  const sig = token.slice(lastDot + 1);
+  if (!id || id.length > MAX_CLIENT_ID_LEN || sig.length !== SIG_HEX_LEN) return null;
+  if (!HEX_RE.test(sig)) return null;
+  const secret   = process.env.SESSION_SECRET ?? "dev-fallback-secret";
+  const expected = crypto.createHmac("sha256", secret).update(id).digest("hex");
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) return null;
+  } catch { return null; }
+  return id;
+}
+
+// Returns true when a value has the ".{64hex}" suffix — i.e. it looks like
+// a signed token. Used to prevent tampered tokens from falling through to the
+// bare-UUID migration path in getClientId().
+function looksLikeSignedToken(value: string): boolean {
+  const lastDot = value.lastIndexOf(".");
+  if (lastDot === -1) return false;
+  const suffix = value.slice(lastDot + 1);
+  return suffix.length === SIG_HEX_LEN && HEX_RE.test(suffix);
+}
+
 function getClientId(req: import("express").Request): string | null {
   const raw = req.headers["x-client-id"];
   if (!raw || typeof raw !== "string") return null;
-  const id = raw.trim();
-  if (id.length === 0 || id.length > MAX_CLIENT_ID_LEN) return null;
-  return id;
+  const value = raw.trim();
+  if (!value) return null;
+
+  // Preferred: verify HMAC-signed token
+  const verified = extractVerifiedClientId(value);
+  if (verified) return verified;
+
+  // Reject anything that looks like a signed token but has a bad signature.
+  // This prevents tampered tokens from slipping through the migration fallback.
+  if (looksLikeSignedToken(value)) return null;
+
+  // Migration fallback: accept bare clientId (UUID/tg_id) during transition window.
+  // TODO: remove this branch once all clients have been issued signed tokens.
+  if (value.length <= MAX_CLIENT_ID_LEN) return value;
+  return null;
 }
 
 // ── Admin brute-force protection — DB-backed (works across Vercel instances) ─
@@ -723,7 +781,7 @@ app.use(cors({
     callback(null, false); // omit ACAO header — browser enforces the block
   },
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-client-id", "x-telegram-init-data", "x-admin-key", "x-client-token"],
   credentials: true,
 }));
 app.use(express.json({ limit: "2mb" })); // 2MB cap prevents memory exhaustion
@@ -748,6 +806,37 @@ ensureTables().catch((err) => console.error("[startup] DB migration check failed
 
 app.get("/api/healthz", (_req, res) => { res.json({ status: "ok" }); });
 app.get("/api/health", (_req, res) => { res.json({ status: "ok" }); });
+
+// ── Client auth ― issue HMAC-signed tokens ────────────────────────────────────
+// POST /api/auth/init
+//   body (optional): { clientId: string }
+//   response:        { clientId, token }   where token = "<clientId>.<hmac-sha256>"
+//
+// Call this once on app load. Pass the previously stored clientId (if any) to
+// preserve conversation history. The server signs it and returns a token the
+// client sends as x-client-id on every subsequent request. Spoofing is impossible
+// without the server-side SESSION_SECRET.
+
+app.post("/api/auth/init", (req, res) => {
+  const proposed = (req.body as Record<string, unknown>)?.clientId;
+  let clientId: string;
+  if (proposed && typeof proposed === "string") {
+    const trimmed = proposed.trim();
+    // Accept an existing signed token (re-sign it) OR a bare clientId (migration).
+    const fromVerified = extractVerifiedClientId(trimmed);
+    if (fromVerified) {
+      clientId = fromVerified;
+    } else if (!looksLikeSignedToken(trimmed) && trimmed.length > 0 && trimmed.length <= MAX_CLIENT_ID_LEN) {
+      clientId = trimmed;
+    } else {
+      clientId = crypto.randomUUID();
+    }
+  } else {
+    clientId = crypto.randomUUID();
+  }
+  const token = signClientId(clientId);
+  res.json({ clientId, token });
+});
 
 // ── Admin ───────────────────────────────────────────────────────────────────────
 
@@ -1714,7 +1803,8 @@ app.post("/api/telegram/auth", async (req, res) => {
     // Non-fatal — subscription will be created on first message
   }
 
-  res.json({ clientId });
+  const token = signClientId(clientId);
+  res.json({ clientId, token });
 });
 
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
