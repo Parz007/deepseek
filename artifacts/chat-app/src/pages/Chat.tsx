@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
-import { useGetConversation, getListConversationsQueryKey } from "@workspace/api-client-react";
+import { useGetConversation, getGetConversationQueryKey, getListConversationsQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
@@ -464,7 +464,7 @@ export default function Chat() {
   // FIX: useGetConversation must be called before any conditional return to comply
   // with React's Rules of Hooks. clientIdReady is added to `enabled` so the query
   // only fires once the clientId is known (same net behaviour, rules-compliant).
-  const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId && clientIdReady } });
+  const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId && clientIdReady, queryKey: getGetConversationQueryKey(convId!) } });
 
   if (!clientIdReady) {
     return (
