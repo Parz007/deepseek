@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 
-const whaleVideo = "/whale.webm";
+const whaleVideo = "/A_sleek_blue_and_white_3D_whale_smoothly_swings_and_sways_with_graceful.webm";
 
 interface Props { onDone: () => void; }
 
