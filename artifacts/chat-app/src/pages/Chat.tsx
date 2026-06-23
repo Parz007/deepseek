@@ -527,7 +527,7 @@ export default function Chat() {
         id: String(m.id),
         role: m.role as "user" | "assistant",
         content: m.content,
-        attachedImageUrl: (m as any).attachedImage ?? undefined,
+        attachedImageUrl: (m as any).attachedImageUrl ?? undefined,
         imageUrl: (m as any).generatedImageUrl ?? undefined,
       })));
     }
