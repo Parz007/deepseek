@@ -4,8 +4,6 @@ import {
   Sparkles, Clock, ChevronRight, ChevronLeft, Wallet, Send,
 } from "lucide-react";
 
-// ── Data ──────────────────────────────────────────────────────────────────────
-
 const WALLETS = [
   {
     id: "erc20",
@@ -45,8 +43,6 @@ const FEATURES = [
 
 const PLAN_PRICES: Record<"monthly" | "lifetime", number> = { monthly: 29, lifetime: 199 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
@@ -69,8 +65,6 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
     </button>
   );
 }
-
-// ── Step progress bar ─────────────────────────────────────────────────────────
 
 const STEP_LABELS = ["Plan", "Payment", "Confirm", "Done"];
 
@@ -117,8 +111,6 @@ function StepBar({ step, total }: { step: number; total: number }) {
   );
 }
 
-// ── Step 1: Plan picker ───────────────────────────────────────────────────────
-
 function StepPlan({
   selected,
   onSelect,
@@ -132,7 +124,6 @@ function StepPlan({
 }) {
   return (
     <div className="flex flex-col gap-5">
-      {/* Feature grid */}
       <div className="grid grid-cols-2 gap-2">
         {FEATURES.map(({ icon: Icon, text, sub }) => (
           <div
@@ -154,7 +145,6 @@ function StepPlan({
         ))}
       </div>
 
-      {/* Plan cards */}
       <div className="grid grid-cols-2 gap-3">
         {(["monthly", "lifetime"] as const).map(plan => {
           const active = selected === plan;
@@ -234,8 +224,6 @@ function StepPlan({
   );
 }
 
-// ── Step 2: Payment (network + wallet + QR) ───────────────────────────────────
-
 function StepPayment({
   plan,
   selectedWallet,
@@ -254,7 +242,6 @@ function StepPayment({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Amount banner */}
       <div
         className="flex items-center justify-between px-4 py-3 rounded-xl"
         style={{ background: "hsl(252 82% 68% / 0.08)", border: "1px solid hsl(252 82% 68% / 0.2)" }}
@@ -271,7 +258,6 @@ function StepPayment({
         </div>
       </div>
 
-      {/* Network selector */}
       <div>
         <p className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: "hsl(var(--muted-foreground))" }}>
           Choose Network
@@ -298,13 +284,11 @@ function StepPayment({
         </p>
       </div>
 
-      {/* Wallet card */}
       <div
         className="rounded-2xl overflow-hidden"
         style={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))" }}
       >
         <div className="flex gap-4 p-4 items-start">
-          {/* QR code */}
           <div
             className="flex-shrink-0 w-[88px] h-[88px] rounded-xl overflow-hidden flex items-center justify-center"
             style={{ background: "white", padding: "5px" }}
@@ -317,7 +301,6 @@ function StepPayment({
             />
           </div>
 
-          {/* Address */}
           <div className="flex-1 min-w-0 flex flex-col gap-2">
             <div className="flex items-center gap-1.5">
               <span
@@ -340,7 +323,6 @@ function StepPayment({
           </div>
         </div>
 
-        {/* Warning */}
         <div
           className="mx-4 mb-4 text-[11px] px-3 py-2.5 rounded-xl flex items-start gap-2"
           style={{ background: "hsl(38 92% 50% / 0.08)", border: "1px solid hsl(38 92% 50% / 0.25)", color: "hsl(38 82% 38%)" }}
@@ -350,7 +332,6 @@ function StepPayment({
         </div>
       </div>
 
-      {/* Navigation */}
       <div className="flex gap-2.5 pt-1">
         <button
           onClick={onBack}
@@ -377,8 +358,6 @@ function StepPayment({
   );
 }
 
-// ── Step 3: Submit TX hash ────────────────────────────────────────────────────
-
 function StepConfirm({
   plan,
   walletIndex,
@@ -402,7 +381,6 @@ function StepConfirm({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Summary card */}
       <div
         className="rounded-xl px-4 py-3 flex flex-col gap-2"
         style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}
@@ -433,7 +411,6 @@ function StepConfirm({
         </div>
       </div>
 
-      {/* TX hash input */}
       <div className="flex flex-col gap-2">
         <label className="text-[11px] font-bold uppercase tracking-wider" style={{ color: "hsl(var(--muted-foreground))" }}>
           Transaction Hash
@@ -469,7 +446,6 @@ function StepConfirm({
         )}
       </div>
 
-      {/* Review note */}
       <div
         className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs"
         style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}
@@ -480,7 +456,6 @@ function StepConfirm({
         </span>
       </div>
 
-      {/* Navigation */}
       <div className="flex gap-2.5">
         <button
           onClick={onBack}
@@ -516,12 +491,9 @@ function StepConfirm({
   );
 }
 
-// ── Step 4: Success ───────────────────────────────────────────────────────────
-
 function StepSuccess({ plan, onClose }: { plan: "monthly" | "lifetime"; onClose: () => void }) {
   return (
     <div className="flex flex-col items-center gap-5 py-4 text-center">
-      {/* Icon */}
       <div className="relative">
         <div
           className="w-20 h-20 rounded-3xl flex items-center justify-center"
@@ -540,7 +512,6 @@ function StepSuccess({ plan, onClose }: { plan: "monthly" | "lifetime"; onClose:
         </div>
       </div>
 
-      {/* Text */}
       <div className="flex flex-col gap-2">
         <h3 className="text-xl font-extrabold tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
           Payment submitted!
@@ -554,7 +525,6 @@ function StepSuccess({ plan, onClose }: { plan: "monthly" | "lifetime"; onClose:
         </p>
       </div>
 
-      {/* Timeline */}
       <div
         className="w-full flex flex-col gap-2.5 rounded-xl p-3.5"
         style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}
@@ -597,8 +567,6 @@ function StepSuccess({ plan, onClose }: { plan: "monthly" | "lifetime"; onClose:
     </div>
   );
 }
-
-// ── Modal shell ───────────────────────────────────────────────────────────────
 
 interface PremiumModalProps {
   onClose: () => void;
@@ -666,7 +634,6 @@ export default function PremiumModal({
           maxHeight: "94dvh",
         }}
       >
-        {/* ── Modal header ── */}
         <div
           className="flex-shrink-0 px-5 pt-5 pb-4"
           style={{ borderBottom: "1px solid hsl(var(--border))" }}
@@ -700,11 +667,9 @@ export default function PremiumModal({
             </button>
           </div>
 
-          {/* Step bar — hide on success screen */}
           {step < 3 && <StepBar step={step} total={3} />}
         </div>
 
-        {/* ── Step content ── */}
         <div className="flex-1 overflow-y-auto px-5 py-5">
           {step === 0 && (
             <StepPlan
