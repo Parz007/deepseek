@@ -23,7 +23,7 @@ const MODEL_OPTIONS = [
 
 export default function Settings() {
   const [, navigate] = useLocation();
-  const { theme, toggleTheme, model, setModel } = useAppContext();
+  const { theme, toggleTheme, model, setModel, clientId } = useAppContext();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [premiumOpen, setPremiumOpen] = useState(false);
@@ -176,7 +176,13 @@ export default function Settings() {
         </Section>
       </div>
 
-      <PremiumModal open={premiumOpen} onClose={() => setPremiumOpen(false)} />
+      {premiumOpen && clientId && (
+        <PremiumModal
+          clientId={clientId}
+          onClose={() => setPremiumOpen(false)}
+          onClaimSubmitted={() => setPremiumOpen(false)}
+        />
+      )}
     </div>
   );
 }
