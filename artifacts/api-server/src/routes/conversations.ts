@@ -169,7 +169,7 @@ const FREE_ALLOWED_MODELS: AllowedModel[] = ["openrouter/auto", "openrouter/fusi
 // Hidden vision model — ONLY used to convert image → text description.
 // Never exposed to the user; never used for the final DeepSeek response.
 // Accepts base64 data URLs ("data:image/...;base64,...") and plain HTTPS URLs.
-const IMAGE_DESCRIPTION_MODEL = "google/gemini-3.1-flash-image-preview";
+const IMAGE_DESCRIPTION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free";
 const IMAGE_DESCRIPTION_PROMPT =
   "Describe this image in detail. Do not add any opinions, greetings, or extra commentary. Output only the description.";
 
