@@ -5,12 +5,12 @@ import {
   getGetConversationQueryKey, getListConversationsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
- import {
-    ArrowLeft, Send, ChevronDown, ChevronRight, Copy, Check,
-    Paperclip, X, Download, Lock, Crown, Loader2, Square,
-    Mic, MicOff, RotateCcw, Plus, Settings, Trash2, MessageSquare,
-    ChevronUp, Sun, Moon, Share2,
-  } from "lucide-react";
+import {
+  ArrowLeft, Send, ChevronDown, ChevronRight, Copy, Check,
+  Paperclip, X, Download, Lock, Crown, Loader2, Square,
+  Mic, MicOff, RotateCcw, Plus, Settings, Trash2, MessageSquare,
+  ChevronUp, Sun, Moon, Share2,
+} from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
 import ReactMarkdown from "react-markdown";
@@ -733,17 +733,7 @@ export default function Chat() {
   const mainRef = useRef<HTMLDivElement>(null);
   const { isPinnedRef, showJump, scrollToBottom } = useStickToBottom(mainRef);
 
-  if (!clientIdReady) {
-    return (
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "center",
-        height: "100dvh", background: "hsl(var(--background))", color: "hsl(var(--muted-foreground))",
-        fontSize: "13px",
-      }}>
-        Authenticating…
-      </div>
-    );
-  }
+  // ── All state declared before any early return (React Rules of Hooks) ──────
 
   const [messages, setMessages] = useState<StreamMessage[]>([]);
   const [input, setInput] = useState("");
@@ -1086,6 +1076,20 @@ export default function Chat() {
     setInput(userMessage);
     setTimeout(() => textareaRef.current?.focus(), 50);
   }, []);
+
+  // ── Early return AFTER all hooks ──────────────────────────────────────────
+
+  if (!clientIdReady) {
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        height: "100dvh", background: "hsl(var(--background))", color: "hsl(var(--muted-foreground))",
+        fontSize: "13px",
+      }}>
+        Authenticating…
+      </div>
+    );
+  }
 
   const imagesLoading = imageLoadingCount > 0;
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !isStreaming && !isLimited && !imagesLoading;
