@@ -6,6 +6,8 @@ export const conversationsTable = pgTable("conversations", {
   id: serial("id").primaryKey(),
   title: text("title").notNull(),
   clientId: text("client_id"),
+  // NEW: nullable UUID written when the owner creates a share link
+  shareToken: text("share_token").unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
