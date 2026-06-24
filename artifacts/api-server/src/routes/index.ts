@@ -5,6 +5,7 @@ import conversationsRouter from "./conversations";
 import subscriptionsRouter from "./subscriptions";
 import telegramRouter from "./telegram";
 import imageRouter from "./image";
+import shareRouter from "./share";          // NEW
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(conversationsRouter);
 router.use(subscriptionsRouter);
 router.use(telegramRouter);
 router.use(imageRouter);
+router.use(shareRouter);                    // NEW
 
 export default router;
