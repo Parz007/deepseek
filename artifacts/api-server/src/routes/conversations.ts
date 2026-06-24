@@ -159,12 +159,13 @@ const ENGLISH_LOCK_ASSISTANT = `Language lock confirmed and active. Every respon
 // ── Models ────────────────────────────────────────────────────────────────────
 
 const ALLOWED_MODELS = [
-  "deepseek/deepseek-v4-flash",
-  "deepseek/deepseek-v4-pro",
+  "openrouter/auto",
+  "openrouter/fusion",
+  "openrouter/free",
 ] as const;
 type AllowedModel = (typeof ALLOWED_MODELS)[number];
 
-const FREE_ALLOWED_MODELS: AllowedModel[] = ["deepseek/deepseek-v4-flash"];
+const FREE_ALLOWED_MODELS: AllowedModel[] = ["openrouter/auto", "openrouter/fusion", "openrouter/free"];
 // Hidden vision model — ONLY used to convert image → text description.
 // Never exposed to the user; never used for the final DeepSeek response.
 // Accepts base64 data URLs ("data:image/...;base64,...") and plain HTTPS URLs.
@@ -389,7 +390,7 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
   const messageContent: string = content ?? "What does this image show?";
   const selectedModel: AllowedModel = (ALLOWED_MODELS as readonly string[]).includes(model)
     ? (model as AllowedModel)
-    : "deepseek/deepseek-v4-flash";
+    : "openrouter/auto";
 
   try {
     let isUserActive = false;
@@ -409,7 +410,7 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       ? selectedModel
       : FREE_ALLOWED_MODELS.includes(selectedModel)
         ? selectedModel
-        : "deepseek/deepseek-v4-flash";
+        : "openrouter/auto";
 
     // Resolve API key early — needed for both image description and DeepSeek calls
     const apiKey = process.env.OPENROUTER_API_KEY;
