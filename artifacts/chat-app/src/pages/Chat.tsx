@@ -1,10 +1,15 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
-import { useGetConversation, getGetConversationQueryKey, getListConversationsQueryKey } from "@workspace/api-client-react";
+import {
+  useGetConversation, useListConversations, useDeleteConversation,
+  getGetConversationQueryKey, getListConversationsQueryKey,
+} from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, Send, Sparkles, Zap, ChevronDown, Copy, Check,
-  Paperclip, X, Download, Lock, Crown, ChevronRight, Loader2, Square,
+  ArrowLeft, Send, ChevronDown, ChevronRight, Copy, Check,
+  Paperclip, X, Download, Lock, Crown, Loader2, Square,
+  Mic, MicOff, RotateCcw, Plus, Settings, Trash2, MessageSquare,
+  ChevronUp, Sun, Moon,
 } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
@@ -15,17 +20,16 @@ import type { Components } from "react-markdown";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface SseEvent {
-    type: "token" | "thinking" | "status" | "tool_status" | "done" | "error";
-    content?: string;
-    text?: string;
-    label?: string;
-    tool?: string;
-    query?: string;
-    url?: string;
-    done?: boolean;
-    message?: string;
-  }
-  
+  type: "token" | "thinking" | "status" | "tool_status" | "done" | "error";
+  content?: string;
+  text?: string;
+  label?: string;
+  tool?: string;
+  query?: string;
+  url?: string;
+  done?: boolean;
+  message?: string;
+}
 
 interface StatusStep {
   text: string;
@@ -53,13 +57,16 @@ interface SubStatus {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const FREE_LIMIT = 20;
-const MAX_IMAGES = 1; // API accepts one imageBase64 per message
+const MAX_IMAGES = 1;
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const MODEL_LABELS: Record<Model, string> = {
   "deepseek/deepseek-v4-flash": "V4 Flash",
   "deepseek/deepseek-v4-pro": "V4 Pro",
 };
+
+// Public-folder whale video (same path used in SplashScreen)
+const WHALE_SRC = "/A_sleek_blue_and_white_3D_whale_smoothly_swings_and_sways_with_graceful.webm";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -89,6 +96,80 @@ function compressImage(dataUrl: string, maxSizePx = 1024, quality = 0.82): Promi
   });
 }
 
+// ── useStickToBottom ──────────────────────────────────────────────────────────
+// Pins scroll to the bottom while the user hasn't scrolled up.
+// Only auto-scrolls when isPinnedRef.current === true.
+
+function useStickToBottom(containerRef: React.RefObject<HTMLDivElement | null>) {
+  const isPinnedRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      isPinnedRef.current = atBottom;
+      setShowJump(!atBottom);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [containerRef]);
+
+  const scrollToBottom = useCallback((smooth = false) => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "instant" });
+    isPinnedRef.current = true;
+    setShowJump(false);
+  }, [containerRef]);
+
+  return { isPinnedRef, showJump, scrollToBottom };
+}
+
+// ── useSpeechRecognition ──────────────────────────────────────────────────────
+
+function useSpeechRecognition(onResult: (text: string) => void) {
+  const [isRecording, setIsRecording] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  const isSupported = typeof window !== "undefined" &&
+    ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+
+  const startRecording = useCallback(() => {
+    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    rec.onresult = (e: any) => {
+      const text = Array.from(e.results as SpeechRecognitionResultList)
+        .map((r: SpeechRecognitionResult) => r[0].transcript).join("");
+      onResult(text);
+    };
+    rec.onerror = (e: any) => {
+      setMicError(e.error === "not-allowed" ? "Microphone access denied" : "Voice input error");
+      setIsRecording(false);
+    };
+    rec.onend = () => setIsRecording(false);
+    rec.start();
+    recognitionRef.current = rec;
+    setIsRecording(true);
+    setMicError(null);
+  }, [onResult]);
+
+  const stopRecording = useCallback(() => {
+    recognitionRef.current?.stop();
+    setIsRecording(false);
+  }, []);
+
+  useEffect(() => () => recognitionRef.current?.abort(), []);
+
+  return { isSupported, isRecording, micError, startRecording, stopRecording };
+}
+
 // ── Code block ────────────────────────────────────────────────────────────────
 
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
@@ -103,7 +184,8 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
       style={{ background: "hsl(230 20% 5%)", border: "1px solid hsl(230 14% 18%)" }}>
       <div className="flex items-center justify-between px-4 py-2"
         style={{ background: "hsl(230 18% 8%)", borderBottom: "1px solid hsl(230 14% 15%)" }}>
-        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "hsl(220 10% 45%)" }}>
+        <span className="text-[11px] font-semibold uppercase tracking-wider"
+          style={{ color: "hsl(220 10% 45%)" }}>
           {lang || "code"}
         </span>
         <button onClick={handleCopy}
@@ -153,7 +235,7 @@ function buildMarkdownComponents(textColor: string): Components {
     strong({ children }) { return <strong style={{ color: textColor, fontWeight: 700 }}>{children}</strong>; },
     em({ children }) { return <em style={{ color: textColor, fontStyle: "italic" }}>{children}</em>; },
     blockquote({ children }) {
-      return <blockquote style={{ margin: "0.6em 0", paddingLeft: "0.9em", borderLeft: "3px solid hsl(252 82% 68% / 0.5)", color: "hsl(var(--muted-foreground))", fontStyle: "italic" }}>{children}</blockquote>;
+      return <blockquote style={{ margin: "0.6em 0", paddingLeft: "0.9em", borderLeft: "3px solid hsl(var(--primary) / 0.5)", color: "hsl(var(--muted-foreground))", fontStyle: "italic" }}>{children}</blockquote>;
     },
     hr() { return <hr style={{ border: "none", borderTop: "1px solid hsl(var(--border))", margin: "0.8em 0" }} />; },
     table({ children }) {
@@ -173,59 +255,85 @@ function MarkdownContent({ content, streaming }: { content: string; streaming?: 
   return (
     <div style={{ fontSize: "0.875rem", lineHeight: 1.65 }}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>
-      {streaming && <span className="inline-block w-0.5 h-3.5 ml-0.5 align-middle rounded-full animate-pulse" style={{ background: "hsl(var(--primary))" }} />}
+      {streaming && <span className="inline-block w-0.5 h-3.5 ml-0.5 align-middle rounded-full animate-pulse"
+        style={{ background: "hsl(var(--primary))" }} />}
     </div>
   );
 }
 
 // ── Thinking block ────────────────────────────────────────────────────────────
+// Auto-collapses when streaming ends; shows elapsed seconds in label.
 
 function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
-  const [open, setOpen] = useState(true); // auto-open so users see thinking in real-time
+  const [open, setOpen] = useState(true);
+  const startRef = useRef<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  // Record start time on first thinking chunk
+  useEffect(() => {
+    if (streaming && content && !startRef.current) {
+      startRef.current = Date.now();
+    }
+  }, [streaming, content]);
+
+  // When streaming ends: record elapsed, collapse
+  useEffect(() => {
+    if (!streaming && startRef.current) {
+      setElapsed(Math.round((Date.now() - startRef.current) / 1000));
+      setOpen(false);
+    }
+  }, [streaming]);
+
   if (!content && !streaming) return null;
-  const isOpen = streaming ? true : open; // always open while streaming
+
+  const isOpen = streaming ? true : open;
+  const label = streaming ? "Thinking…" : `Thought for ${elapsed}s`;
+
   return (
-    <div className="mb-2 rounded-xl overflow-hidden"
-      style={{ border: "1px solid hsl(var(--border) / 0.6)", background: "hsl(var(--muted) / 0.4)" }}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
-        style={{ color: "hsl(var(--muted-foreground))" }}>
-        <span className="flex items-center gap-1.5 text-[11px] font-medium flex-1">
-          {streaming
-            ? <Loader2 size={11} className="animate-spin flex-shrink-0" />
-            : <ChevronRight size={11} className="flex-shrink-0 transition-transform" style={{ transform: isOpen ? "rotate(90deg)" : "rotate(0deg)" }} />}
-          {streaming ? "Thinking…" : `Reasoning trace (${content.length} chars)`}
+    <div className="mb-3" style={{ borderLeft: "2px solid hsl(var(--border))", paddingLeft: "0.75rem" }}>
+      <button onClick={() => !streaming && setOpen(v => !v)}
+        className="flex items-center gap-1.5 mb-1 w-full text-left"
+        style={{ cursor: streaming ? "default" : "pointer" }}>
+        {streaming
+          ? <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 thinking-pulse"
+              style={{ background: "hsl(var(--primary))" }} />
+          : <ChevronRight size={11} style={{
+              color: "hsl(var(--muted-foreground))",
+              transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 0.15s",
+              flexShrink: 0,
+            }} />}
+        <span className="text-[11px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+          {label}
         </span>
       </button>
-      {isOpen && (
-        <div className="px-3 pb-3">
-          <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words"
-            style={{ color: "hsl(var(--muted-foreground))", fontFamily: "var(--app-font-mono)", margin: 0 }}>
-            {content}
-            {streaming && <span className="inline-block w-0.5 h-3 ml-0.5 align-middle animate-pulse" style={{ background: "hsl(var(--muted-foreground))" }} />}
-          </pre>
+      <div style={{
+        overflow: "hidden",
+        maxHeight: isOpen ? "600px" : "0",
+        transition: "max-height 0.25s ease",
+        opacity: isOpen ? 1 : 0,
+      }}>
+        <div className="text-[12px] leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
+          <MarkdownContent content={content} streaming={streaming} />
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
 // ── Status steps ──────────────────────────────────────────────────────────────
-// Renders one row per tool call: spinner while running, checkmark when done.
-// The label comes from TOOL_DISPLAY in handler.ts, e.g. "🔍 Searching the web for …"
 
 function StatusSteps({ steps }: { steps: StatusStep[] }) {
-  if (!steps.length) return null;
   return (
-    <div className="mb-2 flex flex-col gap-1">
+    <div className="flex flex-col gap-1 py-0.5">
       {steps.map((step, i) => (
-        <div key={i} className="flex items-center gap-2 text-[12px]"
-          style={{ color: step.done ? "hsl(142 62% 45%)" : "hsl(var(--muted-foreground))" }}>
+        <div key={i} className="flex items-center gap-2">
           {step.done
-            ? <Check size={12} strokeWidth={2.5} className="flex-shrink-0" />
-            : <Loader2 size={12} className="animate-spin flex-shrink-0" />}
-          <span>{step.text}</span>
+            ? <Check size={11} style={{ color: "hsl(142 52% 48%)", flexShrink: 0 }} strokeWidth={2.5} />
+            : <Loader2 size={11} className="animate-spin flex-shrink-0" style={{ color: "hsl(var(--muted-foreground))" }} />}
+          <span className="text-[11px]" style={{ color: step.done ? "hsl(var(--muted-foreground))" : "hsl(var(--foreground))" }}>
+            {step.text}
+          </span>
         </div>
       ))}
     </div>
@@ -234,29 +342,25 @@ function StatusSteps({ steps }: { steps: StatusStep[] }) {
 
 // ── Download button ───────────────────────────────────────────────────────────
 
-function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt?: string }) {
+function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt: string }) {
   const [downloading, setDownloading] = useState(false);
   const handleDownload = async () => {
     setDownloading(true);
     try {
-      const filename = `flux-${Date.now()}.png`;
-      if (imageUrl.startsWith("data:")) {
-        const a = document.createElement("a"); a.href = imageUrl; a.download = filename; a.click();
-      } else {
-        const res = await fetch(imageUrl);
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
-        URL.revokeObjectURL(url);
-      }
-    } catch { /* ignore */ } finally { setDownloading(false); }
+      const res = await fetch(imageUrl);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${prompt.slice(0, 40).replace(/[^a-z0-9]/gi, "_")}.png`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch { /* ignore */ }
+    finally { setDownloading(false); }
   };
   return (
     <button onClick={handleDownload} disabled={downloading}
-      title={prompt ? `Download: ${prompt}` : "Download image"}
-      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-90"
-      style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
-      <Download size={12} />
+      className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all active:scale-90"
+      style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
+      {downloading ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
       {downloading ? "Saving…" : "Download"}
     </button>
   );
@@ -265,26 +369,26 @@ function DownloadButton({ imageUrl, prompt }: { imageUrl: string; prompt?: strin
 // ── Usage bar ─────────────────────────────────────────────────────────────────
 
 function UsageBar({ used, limit, onUpgrade }: { used: number; limit: number; onUpgrade: () => void }) {
-  const remaining = Math.max(0, limit - used);
-  const pct = Math.min(100, (used / limit) * 100);
-  const isLow = remaining <= 5;
-  const isEmpty = remaining === 0;
-  const barColor = isEmpty ? "hsl(0 72% 51%)" : isLow ? "hsl(38 92% 50%)" : "hsl(252 82% 68%)";
+  const pct = Math.min((used / limit) * 100, 100);
+  const isHigh = pct >= 80;
   return (
     <div className="mb-2 px-1">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[11px] font-medium" style={{ color: isEmpty ? "hsl(0 72% 51%)" : isLow ? "hsl(38 92% 50%)" : "hsl(var(--muted-foreground))" }}>
-          {isEmpty ? "Daily limit reached" : `${remaining} message${remaining === 1 ? "" : "s"} remaining today`}
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+          {used} / {limit} free messages
         </span>
         <button onClick={onUpgrade}
-          className="text-[11px] font-semibold flex items-center gap-0.5 transition-opacity hover:opacity-75"
+          className="text-[10px] font-semibold underline transition-colors"
           style={{ color: "hsl(var(--primary))" }}>
-          <Crown size={10} />
           Upgrade
         </button>
       </div>
-      <div className="h-1 rounded-full overflow-hidden" style={{ background: "hsl(var(--border))" }}>
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: barColor }} />
+      <div className="h-0.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--border))" }}>
+        <div className="h-full rounded-full transition-all"
+          style={{
+            width: `${pct}%`,
+            background: isHigh ? "hsl(var(--destructive))" : "hsl(var(--primary))",
+          }} />
       </div>
     </div>
   );
@@ -294,50 +398,52 @@ function UsageBar({ used, limit, onUpgrade }: { used: number; limit: number; onU
 
 function LimitReachedBanner({ onUpgrade }: { onUpgrade: () => void }) {
   return (
-    <div className="rounded-2xl overflow-hidden"
-      style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))" }}>
-      <div className="px-4 py-4 flex flex-col gap-3">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{ background: "hsl(252 82% 68% / 0.12)", border: "1px solid hsl(252 82% 68% / 0.2)" }}>
-            <Lock size={14} style={{ color: "hsl(var(--primary))" }} />
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-semibold leading-tight" style={{ color: "hsl(var(--foreground))" }}>
-              You've used all 20 free messages today
-            </p>
-            <p className="text-[11px] mt-0.5 leading-snug" style={{ color: "hsl(var(--muted-foreground))" }}>
-              Resets at midnight UTC · Upgrade for unlimited access
-            </p>
-          </div>
+    <div className="mb-3 px-4 py-3 rounded-xl"
+      style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}>
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+          style={{ background: "hsl(var(--border))" }}>
+          <Lock size={13} style={{ color: "hsl(var(--muted-foreground))" }} />
         </div>
-        <button onClick={onUpgrade}
-          className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.98]"
-          style={{
-            background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))",
-            color: "white",
-            boxShadow: "0 4px 14px hsl(252 82% 68% / 0.35)",
-          }}>
-          <span className="flex items-center justify-center gap-1.5">
-            <Crown size={13} />
-            Get Unlimited — from $29/mo
-          </span>
-        </button>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold leading-tight" style={{ color: "hsl(var(--foreground))" }}>
+            You've used all {FREE_LIMIT} free messages today
+          </p>
+          <p className="text-[11px] mt-0.5 leading-snug" style={{ color: "hsl(var(--muted-foreground))" }}>
+            Resets at midnight UTC · Upgrade for unlimited access
+          </p>
+        </div>
       </div>
+      <button onClick={onUpgrade}
+        className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.98]"
+        style={{ background: "hsl(var(--foreground))", color: "hsl(var(--background))" }}>
+        <span className="flex items-center justify-center gap-1.5">
+          <Crown size={13} />
+          Get Unlimited — from $29/mo
+        </span>
+      </button>
     </div>
   );
 }
 
 // ── AI avatar ─────────────────────────────────────────────────────────────────
+// Shows an animated whale video while streaming; a flat monochrome "D" at rest.
 
-function AIAvatar() {
+function AIAvatar({ isStreaming }: { isStreaming?: boolean }) {
+  if (isStreaming) {
+    return (
+      <div className="w-8 h-8 rounded-xl overflow-hidden flex-shrink-0"
+        style={{ border: "1px solid hsl(var(--border))" }}>
+        <video autoPlay loop muted playsInline className="w-full h-full object-cover">
+          <source src={WHALE_SRC} type="video/webm" />
+        </video>
+      </div>
+    );
+  }
   return (
-    <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-      style={{
-        background: "linear-gradient(135deg, hsl(252 82% 68% / 0.2), hsl(198 80% 56% / 0.1))",
-        border: "1px solid hsl(252 82% 68% / 0.2)",
-      }}>
-      <Sparkles size={13} style={{ color: "hsl(var(--primary))" }} />
+    <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 text-sm font-bold select-none"
+      style={{ background: "hsl(var(--muted))", color: "hsl(var(--foreground))", border: "1px solid hsl(var(--border))" }}>
+      D
     </div>
   );
 }
@@ -355,9 +461,21 @@ function CopyButton({ text }: { text: string }) {
     <button onClick={handleCopy} title="Copy message"
       className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg transition-all active:scale-90 select-none"
       style={{
-        background: copied ? "hsl(142 62% 52% / 0.12)" : "hsl(var(--muted))",
-        border: `1px solid ${copied ? "hsl(142 62% 52% / 0.3)" : "hsl(var(--border))"}`,
+        background: "transparent",
+        border: `1px solid ${copied ? "hsl(142 62% 52% / 0.4)" : "transparent"}`,
         color: copied ? "hsl(142 62% 45%)" : "hsl(var(--muted-foreground))",
+      }}
+      onMouseEnter={e => {
+        if (!copied) {
+          (e.currentTarget as HTMLElement).style.borderColor = "hsl(var(--border))";
+          (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))";
+        }
+      }}
+      onMouseLeave={e => {
+        if (!copied) {
+          (e.currentTarget as HTMLElement).style.borderColor = "transparent";
+          (e.currentTarget as HTMLElement).style.background = "transparent";
+        }
       }}>
       {copied ? <Check size={11} strokeWidth={2.5} /> : <Copy size={11} strokeWidth={2} />}
       <span className="text-[10px] font-medium leading-none">{copied ? "Copied!" : "Copy"}</span>
@@ -365,10 +483,23 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+// ── Retry button ──────────────────────────────────────────────────────────────
+
+function RetryButton({ onRetry }: { onRetry: () => void }) {
+  return (
+    <button onClick={onRetry}
+      className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium mt-1.5 transition-all active:scale-90"
+      style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
+      <RotateCcw size={10} strokeWidth={2.5} />
+      Retry
+    </button>
+  );
+}
+
 // ── Message bubble ────────────────────────────────────────────────────────────
 
 function MessageBubble({
-  role, content, streaming, error, imageUrl, attachedImageUrl, thinking, statusSteps,
+  role, content, streaming, error, imageUrl, attachedImageUrl, thinking, statusSteps, onRetry,
 }: {
   role: "user" | "assistant";
   content: string;
@@ -378,47 +509,57 @@ function MessageBubble({
   attachedImageUrl?: string;
   thinking?: string;
   statusSteps?: StatusStep[];
+  onRetry?: () => void;
 }) {
+  // ── User ──
   if (role === "user") {
     return (
       <div className="flex flex-col items-end gap-1">
-        <div className="pr-1"><CopyButton text={content} /></div>
         {attachedImageUrl && (
           <img src={attachedImageUrl} alt="Attached" className="max-w-[200px] rounded-xl object-cover mb-1"
             style={{ border: "1px solid hsl(var(--border))" }} />
         )}
         {content && (
-          <div className="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-md text-sm leading-relaxed"
-            style={{ background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))", color: "white", boxShadow: "0 3px 14px hsl(252 82% 68% / 0.35)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          <div className="max-w-[78%] px-4 py-2.5 rounded-2xl rounded-br-sm text-sm leading-relaxed"
+            style={{
+              background: "hsl(var(--muted))",
+              color: "hsl(var(--foreground))",
+              border: "1px solid hsl(var(--border))",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}>
             {content}
           </div>
         )}
+        <div className="pr-1"><CopyButton text={content} /></div>
       </div>
     );
   }
 
+  // ── Error ──
   if (error) {
     return (
-      <div className="flex items-end gap-2.5">
+      <div className="flex items-start gap-2.5">
         <AIAvatar />
-        <div className="flex flex-col gap-1 max-w-[85%]">
-          <div className="px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed"
-            style={{ background: "hsl(var(--destructive) / 0.08)", border: "1px solid hsl(var(--destructive) / 0.25)", color: "hsl(var(--destructive))", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+        <div className="flex flex-col gap-0.5 min-w-0" style={{ maxWidth: "680px" }}>
+          <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--destructive))", whiteSpace: "pre-wrap" }}>
             {content}
-          </div>
+          </p>
+          {onRetry && <RetryButton onRetry={onRetry} />}
         </div>
       </div>
     );
   }
 
+  // ── Image response ──
   if (imageUrl) {
     return (
       <div className="flex items-start gap-2.5">
         <AIAvatar />
-        <div className="flex flex-col gap-2 min-w-0 max-w-[85%]">
-          <div className="rounded-2xl rounded-bl-md overflow-hidden"
-            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-            <img src={imageUrl} alt={content} className="w-full block" style={{ maxWidth: "400px", display: "block" }} />
+        <div className="flex flex-col gap-2 min-w-0" style={{ maxWidth: "460px" }}>
+          <div className="rounded-2xl overflow-hidden"
+            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))" }}>
+            <img src={imageUrl} alt={content} className="w-full block" style={{ maxWidth: "400px" }} />
           </div>
           {content && <p className="text-[11px] px-1 leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>{content}</p>}
           <div className="pl-1"><DownloadButton imageUrl={imageUrl} prompt={content} /></div>
@@ -427,26 +568,150 @@ function MessageBubble({
     );
   }
 
+  // ── Assistant text — no card bubble, text directly on background ──
   return (
     <div className="flex items-start gap-2.5">
-      <AIAvatar />
-      <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
+      <AIAvatar isStreaming={streaming} />
+      <div className="flex flex-col gap-1.5 min-w-0 flex-1" style={{ maxWidth: "680px" }}>
         {statusSteps && statusSteps.length > 0 && (
-          <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
-            style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
+          <div className="mb-1">
             <StatusSteps steps={statusSteps} />
           </div>
         )}
-        <div className="px-4 py-3 rounded-2xl rounded-bl-md"
-          style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
-          {thinking && (
-            <ThinkingBlock content={thinking} streaming={streaming && !content} />
-          )}
-          <MarkdownContent content={content} streaming={streaming} />
-        </div>
-        {!streaming && <div className="pl-1"><CopyButton text={content} /></div>}
+        {thinking && (
+          <ThinkingBlock content={thinking} streaming={streaming && !content} />
+        )}
+        <MarkdownContent content={content} streaming={streaming} />
+        {!streaming && content && <div><CopyButton text={content} /></div>}
       </div>
     </div>
+  );
+}
+
+// ── Sidebar (desktop, md+) ────────────────────────────────────────────────────
+
+function Sidebar({
+  currentConvId,
+  onNewChat,
+  onSelectConv,
+}: {
+  currentConvId: number | null;
+  onNewChat: () => void;
+  onSelectConv: (id: number) => void;
+}) {
+  const queryClient = useQueryClient();
+  const { theme, toggleTheme, clientId } = useAppContext();
+  const { data: conversations = [] } = useListConversations();
+  const deleteConversation = useDeleteConversation({
+    mutation: { onSuccess: () => queryClient.invalidateQueries({ queryKey: getListConversationsQueryKey() }) },
+  });
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [, navigate] = useLocation();
+
+  return (
+    <aside className="hidden md:flex flex-col w-60 flex-shrink-0 h-dvh overflow-hidden"
+      style={{ borderRight: "1px solid hsl(var(--border))", background: "hsl(var(--sidebar))" }}>
+
+      {/* Logo */}
+      <div className="flex items-center justify-between px-4 pt-5 pb-4"
+        style={{ borderBottom: "1px solid hsl(var(--border))" }}>
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold"
+            style={{ background: "hsl(var(--foreground))", color: "hsl(var(--background))" }}>
+            D
+          </div>
+          <span className="font-semibold text-sm" style={{ color: "hsl(var(--foreground))" }}>DeepSeek</span>
+        </div>
+        <button onClick={toggleTheme}
+          className="w-7 h-7 rounded-lg flex items-center justify-center transition-all active:scale-90"
+          style={{ color: "hsl(var(--muted-foreground))" }}>
+          {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
+        </button>
+      </div>
+
+      {/* New chat */}
+      <div className="px-3 py-3">
+        <button onClick={onNewChat}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all active:scale-[0.98]"
+          style={{ background: "hsl(var(--muted))", color: "hsl(var(--foreground))", border: "1px solid hsl(var(--border))" }}>
+          <Plus size={14} strokeWidth={2.5} />
+          New chat
+        </button>
+      </div>
+
+      {/* Conversations */}
+      <div className="flex-1 overflow-y-auto px-2 pb-2">
+        {conversations.length > 0 && (
+          <p className="text-[10px] font-semibold uppercase tracking-widest px-2 pb-1.5 pt-1"
+            style={{ color: "hsl(var(--muted-foreground))" }}>Recent</p>
+        )}
+        {conversations.map(conv => {
+          const isActive = conv.id === currentConvId;
+          const isConfirming = confirmDeleteId === conv.id;
+          return (
+            <div key={conv.id}
+              onClick={() => !isConfirming && onSelectConv(conv.id)}
+              className="group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-all mb-0.5"
+              style={{
+                background: isActive ? "hsl(var(--muted))" : "transparent",
+                border: `1px solid ${isActive ? "hsl(var(--border))" : "transparent"}`,
+              }}
+              onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted) / 0.6)"; }}
+              onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+
+              {isConfirming ? (
+                <div className="flex-1 flex items-center justify-between">
+                  <span className="text-xs" style={{ color: "hsl(var(--destructive))" }}>Delete?</span>
+                  <div className="flex gap-1">
+                    <button onClick={async e => {
+                      e.stopPropagation();
+                      await deleteConversation.mutateAsync({ id: conv.id });
+                      setConfirmDeleteId(null);
+                      if (isActive) navigate("/");
+                    }}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold"
+                      style={{ background: "hsl(var(--destructive))", color: "white" }}>
+                      Yes
+                    </button>
+                    <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                      className="px-2 py-0.5 rounded text-[10px]"
+                      style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
+                      No
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <MessageSquare size={13} style={{ color: "hsl(var(--muted-foreground))", flexShrink: 0 }} />
+                  <span className="flex-1 truncate text-xs" style={{ color: "hsl(var(--foreground))" }}>
+                    {conv.title}
+                  </span>
+                  <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(conv.id); }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity w-5 h-5 rounded flex items-center justify-center"
+                    style={{ color: "hsl(var(--muted-foreground))" }}
+                    onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = "hsl(var(--destructive))"}
+                    onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = "hsl(var(--muted-foreground))"}>
+                    <Trash2 size={11} />
+                  </button>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Footer links */}
+      <div className="px-3 py-3" style={{ borderTop: "1px solid hsl(var(--border))" }}>
+        <button onClick={() => navigate("/settings")}
+          className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs transition-all"
+          style={{ color: "hsl(var(--muted-foreground))" }}
+          onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"}
+          onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+          <Settings size={13} />
+          Settings
+        </button>
+      </div>
+    </aside>
   );
 }
 
@@ -461,17 +726,19 @@ export default function Chat() {
   const isNew = !params.id || params.id === "new";
   const convId = isNew ? null : parseInt(params.id, 10);
 
-  // FIX: useGetConversation must be called before any conditional return to comply
-  // with React's Rules of Hooks. clientIdReady is added to `enabled` so the query
-  // only fires once the clientId is known (same net behaviour, rules-compliant).
-  const { data: conv } = useGetConversation(convId!, { query: { enabled: !!convId && clientIdReady, queryKey: getGetConversationQueryKey(convId!) } });
+  const { data: conv } = useGetConversation(convId!, {
+    query: { enabled: !!convId && clientIdReady, queryKey: getGetConversationQueryKey(convId!) },
+  });
+
+  const mainRef = useRef<HTMLDivElement>(null);
+  const { isPinnedRef, showJump, scrollToBottom } = useStickToBottom(mainRef);
 
   if (!clientIdReady) {
     return (
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "center",
-        height: "100dvh", background: "hsl(230 18% 6%)", color: "hsl(220 10% 48%)",
-        fontSize: "13px", fontFamily: "Inter, system-ui, sans-serif",
+        height: "100dvh", background: "hsl(var(--background))", color: "hsl(var(--muted-foreground))",
+        fontSize: "13px",
       }}>
         Authenticating…
       </div>
@@ -490,23 +757,26 @@ export default function Chat() {
   const [premiumTriggeredByLimit, setPremiumTriggeredByLimit] = useState(false);
   const [subStatus, setSubStatus] = useState<SubStatus | null>(null);
   const [claimSubmitted, setClaimSubmitted] = useState(false);
-
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [imageLoadingCount, setImageLoadingCount] = useState(0);
   const [imageError, setImageError] = useState<string | null>(null);
   const [optimisticImages, setOptimisticImages] = useState<string[]>([]);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
 
   const pendingImageOps = useRef(0);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const apiBase = import.meta.env.VITE_API_URL || "";
 
+  // ── Subscription status ───────────────────────────────────────────────────
+
   const fetchSubStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${apiBase}/api/subscription/status`, { headers: { "X-Client-ID": clientId } });
+      const res = await fetch(`${apiBase}/api/subscription/status`, {
+        headers: { "X-Client-ID": clientId },
+      });
       if (res.ok) {
         const data = await res.json() as SubStatus;
         setSubStatus(data);
@@ -521,19 +791,30 @@ export default function Chat() {
     fetchSubStatus();
   }, [fetchSubStatus]);
 
+  // ── Load conversation ─────────────────────────────────────────────────────
+
   useEffect(() => {
     if (conv?.messages) {
       setMessages(conv.messages.map(m => ({
         id: String(m.id),
         role: m.role as "user" | "assistant",
         content: m.content,
-        attachedImageUrl: (m as any).attachedImageUrl ?? undefined,
+        // BUG FIX: backend stores as "attachedImage", not "attachedImageUrl"
+        attachedImageUrl: (m as any).attachedImage ?? (m as any).attachedImageUrl ?? undefined,
         imageUrl: (m as any).generatedImageUrl ?? undefined,
       })));
     }
   }, [conv]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, streamingToken, optimisticUser]);
+  // ── Auto-scroll (only when pinned to bottom) ───────────────────────────────
+
+  useEffect(() => {
+    if (isPinnedRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    }
+  }, [messages, streamingToken, optimisticUser, isPinnedRef]);
+
+  // ── Textarea auto-resize ──────────────────────────────────────────────────
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -542,12 +823,16 @@ export default function Chat() {
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   }, [input]);
 
+  // ── Model menu close on outside click ────────────────────────────────────
+
   useEffect(() => {
     if (!showModelMenu) return;
     const handler = () => setShowModelMenu(false);
     document.addEventListener("click", handler);
     return () => document.removeEventListener("click", handler);
   }, [showModelMenu]);
+
+  // ── Free plan enforcement ─────────────────────────────────────────────────
 
   const msgCount = subStatus?.messageCount ?? 0;
   const isPremium = subStatus?.isActive ?? false;
@@ -569,80 +854,51 @@ export default function Chat() {
     setImageLoadingCount(Math.max(0, pendingImageOps.current));
   }, []);
 
-  const handleImageAttach = () => {
-    setImageError(null);
-    fileInputRef.current?.click();
-  };
+  const handleImageAttach = () => { setImageError(null); fileInputRef.current?.click(); };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
     setImageError(null);
-
     const remaining = MAX_IMAGES - attachedImages.length;
-    if (remaining <= 0) {
-      setImageError(`Max ${MAX_IMAGES} images per message`);
-      return;
-    }
-
+    if (remaining <= 0) { setImageError(`Max ${MAX_IMAGES} images per message`); return; }
     const toProcess = files.slice(0, remaining);
-    if (files.length > remaining) {
-      setImageError(`Only ${remaining} more image${remaining === 1 ? "" : "s"} allowed (max ${MAX_IMAGES})`);
-    }
+    if (files.length > remaining) setImageError(`Only ${remaining} more image${remaining === 1 ? "" : "s"} allowed (max ${MAX_IMAGES})`);
 
     for (const file of toProcess) {
-      if (!file.type.startsWith("image/")) {
-        setImageError("Only image files are supported");
-        continue;
-      }
-      if (file.size > MAX_IMAGE_SIZE_BYTES) {
-        setImageError(`Image too large (max 5 MB per image): ${file.name}`);
-        continue;
-      }
-
+      if (!file.type.startsWith("image/")) { setImageError("Only image files are supported"); continue; }
+      if (file.size > MAX_IMAGE_SIZE_BYTES) { setImageError(`Image too large (max 5 MB): ${file.name}`); continue; }
       pendingImageOps.current += 1;
       setImageLoadingCount(pendingImageOps.current);
-
       const reader = new FileReader();
-
-      const safetyTimer = setTimeout(() => {
-        decrementImageLoading();
-        setImageError(`Processing timed out: ${file.name}`);
-      }, 15000);
-
+      const safetyTimer = setTimeout(() => { decrementImageLoading(); setImageError(`Timed out: ${file.name}`); }, 15000);
       reader.onload = async (ev) => {
         clearTimeout(safetyTimer);
         const raw = ev.target?.result as string;
         try {
           const compressed = await compressImage(raw);
-          setAttachedImages(prev => {
-            if (prev.length >= MAX_IMAGES) return prev;
-            return [...prev, compressed];
-          });
-        } catch {
-          setImageError(`Failed to process image: ${file.name}`);
-        } finally {
-          decrementImageLoading();
-        }
+          setAttachedImages(prev => { if (prev.length >= MAX_IMAGES) return prev; return [...prev, compressed]; });
+        } catch { setImageError(`Failed to process image: ${file.name}`); }
+        finally { decrementImageLoading(); }
       };
-      reader.onerror = () => {
-        clearTimeout(safetyTimer);
-        setImageError(`Failed to read image: ${file.name}`);
-        decrementImageLoading();
-      };
+      reader.onerror = () => { clearTimeout(safetyTimer); setImageError(`Failed to read image: ${file.name}`); decrementImageLoading(); };
       reader.readAsDataURL(file);
     }
   };
 
-  const removeImage = (index: number) => {
-    setAttachedImages(prev => prev.filter((_, i) => i !== index));
-    setImageError(null);
-  };
+  const removeImage = (index: number) => { setAttachedImages(prev => prev.filter((_, i) => i !== index)); setImageError(null); };
+
+  // ── Voice input ───────────────────────────────────────────────────────────
+
+  const speechRecognition = useSpeechRecognition(useCallback((text: string) => {
+    setInput(text);
+  }, []));
 
   // ── Send ──────────────────────────────────────────────────────────────────
+  // Accepts an optional overrideMessage for retry flows.
 
-  const handleSend = useCallback(async () => {
-    const trimmed = input.trim();
+  const handleSend = useCallback(async (overrideMessage?: string) => {
+    const trimmed = overrideMessage !== undefined ? overrideMessage.trim() : input.trim();
     if ((!trimmed && attachedImages.length === 0) || isStreaming) return;
     if (isLimited) { openPremium(true); return; }
     if (imageLoadingCount > 0) return;
@@ -651,7 +907,7 @@ export default function Chat() {
     const capturedImages = [...attachedImages];
     const primaryImage = capturedImages[0] || null;
 
-    setInput("");
+    if (overrideMessage === undefined) setInput("");
     setAttachedImages([]);
     setImageError(null);
     setOptimisticImages(capturedImages);
@@ -660,6 +916,7 @@ export default function Chat() {
     setStreamingThinking("");
     setStreamingSteps([]);
     setOptimisticUser(userMessage);
+    scrollToBottom(false);
 
     let targetId = convId;
     try {
@@ -689,41 +946,31 @@ export default function Chat() {
       });
 
       if (res.status === 402) {
-        await fetchSubStatus();
-        openPremium(true);
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(), role: "user", content: userMessage,
-          attachedImageUrl: primaryImage || undefined,
-        }]);
+        await fetchSubStatus(); openPremium(true);
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined }]);
         return;
       }
-
       if (res.status === 429) {
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
           { id: (Date.now() + 1).toString(), role: "assistant", content: "Too many requests — please wait a moment and try again.", error: true },
-        ]);
-        return;
+        ]); return;
       }
-
       if (res.status === 409) {
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
           { id: (Date.now() + 1).toString(), role: "assistant", content: "A response is already in progress. Please wait for it to finish.", error: true },
-        ]);
-        return;
+        ]); return;
       }
-
       if (!res.ok) {
         const errText = await res.text().catch(() => "Server error");
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
           { id: (Date.now() + 1).toString(), role: "assistant", content: errText || "Server error. Please try again.", error: true },
-        ]);
-        return;
+        ]); return;
       }
 
-      // ── Consume SSE stream ───────────────────────────────────────────────
+      // ── Consume SSE stream ─────────────────────────────────────────────
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let sseBuffer = "";
@@ -749,43 +996,32 @@ export default function Chat() {
                 fullToken += evt.content;
                 setStreamingToken(fullToken);
               }
-
               if (evt.type === "thinking" && evt.content) {
                 fullThinking += evt.content;
                 setStreamingThinking(fullThinking);
               }
-
-                            if (evt.type === "status" && evt.text) {
-                  if (!evt.done) {
-                    // Tool is starting — add a pending step with spinner
-                    liveSteps.push({ text: evt.text, done: false });
-                  } else {
-                    // Tool finished — find the matching step and mark it done (checkmark)
-                    const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
-                    if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
-                  }
-                  setStreamingSteps([...liveSteps]);
+              if (evt.type === "status" && evt.text) {
+                if (!evt.done) {
+                  liveSteps.push({ text: evt.text, done: false });
+                } else {
+                  const idx = [...liveSteps].reverse().findIndex(s => s.text === evt.text && !s.done);
+                  if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
                 }
-
-                if (evt.type === "tool_status") {
-                  // conversations.ts sends { type: "tool_status", label, tool, query?, url? }
-                  const stepText = evt.label ?? `Running ${evt.tool ?? "tool"}…`;
-                  const alreadyDone = liveSteps.some(s => s.text === stepText && s.done);
-                  const alreadyPending = liveSteps.some(s => s.text === stepText && !s.done);
-                  if (!alreadyPending && !alreadyDone) {
-                    liveSteps.push({ text: stepText, done: false });
-                  } else if (alreadyPending) {
-                    const idx = [...liveSteps].reverse().findIndex(s => s.text === stepText && !s.done);
-                    if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
-                  }
-                  setStreamingSteps([...liveSteps]);
+                setStreamingSteps([...liveSteps]);
               }
-
-              if (evt.type === "error") {
-                streamError = evt.message || "Something went wrong. Please try again.";
-                break outer;
+              if (evt.type === "tool_status") {
+                const stepText = evt.label ?? `Running ${evt.tool ?? "tool"}…`;
+                const alreadyDone = liveSteps.some(s => s.text === stepText && s.done);
+                const alreadyPending = liveSteps.some(s => s.text === stepText && !s.done);
+                if (!alreadyPending && !alreadyDone) {
+                  liveSteps.push({ text: stepText, done: false });
+                } else if (alreadyPending) {
+                  const idx = [...liveSteps].reverse().findIndex(s => s.text === stepText && !s.done);
+                  if (idx !== -1) liveSteps[liveSteps.length - 1 - idx].done = true;
+                }
+                setStreamingSteps([...liveSteps]);
               }
-
+              if (evt.type === "error") { streamError = evt.message || "Something went wrong. Please try again."; break outer; }
               if (evt.type === "done") break outer;
             } catch { /* skip malformed */ }
           }
@@ -802,20 +1038,23 @@ export default function Chat() {
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
           { id: (Date.now() + 1).toString(), role: "assistant", content: streamError!, error: true },
-        ]);
-        return;
+        ]); return;
       }
 
-      // Clear optimistic before committing final messages to prevent flash
+      // BUG FIX: treat empty fullToken as an error instead of "(no response)"
+      const finalContent = fullToken.trim();
+      if (!finalContent) {
+        setMessages(prev => [...prev,
+          { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
+          { id: (Date.now() + 1).toString(), role: "assistant", content: "No response received. Please try again.", error: true },
+        ]); return;
+      }
+
       setOptimisticUser("");
       setOptimisticImages([]);
       setMessages(prev => [...prev,
         { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
-        {
-          id: (Date.now() + 1).toString(), role: "assistant",
-          content: fullToken || "(no response)",
-          thinking: fullThinking || undefined,
-        },
+        { id: (Date.now() + 1).toString(), role: "assistant", content: finalContent, thinking: fullThinking || undefined },
       ]);
       fetchSubStatus();
       if (isNew && targetId) navigate(`/chat/${targetId}`, { replace: true });
@@ -833,165 +1072,190 @@ export default function Chat() {
       setStreamingSteps([]);
       setOptimisticUser("");
       setOptimisticImages([]);
-      // Restore focus to textarea so user can type the next message immediately
       setTimeout(() => textareaRef.current?.focus(), 50);
     }
-  }, [input, attachedImages, imageLoadingCount, isStreaming, isLimited, convId, isNew, queryClient, navigate, model, clientId, apiBase, fetchSubStatus, setModel]);
+  }, [
+    input, attachedImages, imageLoadingCount, isStreaming, isLimited,
+    convId, isNew, queryClient, navigate, model, clientId, apiBase,
+    fetchSubStatus, setModel, scrollToBottom,
+  ]);
+
+  // ── Retry handler ─────────────────────────────────────────────────────────
+
+  const handleRetry = useCallback((userMessage: string) => {
+    setInput(userMessage);
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }, []);
 
   const imagesLoading = imageLoadingCount > 0;
   const canSend = (input.trim().length > 0 || attachedImages.length > 0) && !isStreaming && !isLimited && !imagesLoading;
+  const showMicButton = speechRecognition.isSupported && !isStreaming && !canSend && !isLimited;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-dvh" style={{ background: "hsl(var(--background))" }}>
+    <div className="flex h-dvh" style={{ background: "hsl(var(--background))" }}>
 
-      {/* ── Header ── */}
-      <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
-        style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
-        <button onClick={() => navigate("/")}
-          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-          style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
-          <ArrowLeft size={17} />
-        </button>
+      {/* Desktop sidebar */}
+      <Sidebar
+        currentConvId={convId}
+        onNewChat={() => navigate("/chat/new")}
+        onSelectConv={(id) => navigate(`/chat/${id}`)}
+      />
 
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-            style={{
-              background: "linear-gradient(135deg, hsl(252 82% 68%), hsl(198 80% 56%))",
-              boxShadow: "0 3px 12px hsl(252 82% 68% / 0.35)",
-            }}>
-            <Sparkles size={15} className="text-white" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
-              {isNew ? "New Chat" : conv?.title || "Chat"}
-            </p>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <Zap size={10} style={{ color: "hsl(var(--primary))" }} />
-              <span className="text-[11px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {MODEL_LABELS[model]}
-              </span>
-              {isStreaming && (
-                <span className="flex gap-0.5 ml-1">
-                  {[0, 0.15, 0.3].map((delay, i) => (
-                    <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full"
-                      style={{ background: "hsl(var(--primary))", animationDelay: `${delay}s` }} />
-                  ))}
+      {/* Main column */}
+      <div className="flex flex-col flex-1 min-w-0 h-dvh">
+
+        {/* ── Header ── */}
+        <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
+          style={{ background: "hsl(var(--sidebar))", borderBottom: "1px solid hsl(var(--border))" }}>
+
+          {/* Back/menu button — mobile shows back, desktop hidden (sidebar is there) */}
+          <button onClick={() => navigate("/")}
+            className="md:hidden w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+            style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>
+            <ArrowLeft size={17} />
+          </button>
+
+          <div className="flex items-center gap-2.5 flex-1 min-w-0">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
+                {isNew ? "New Chat" : conv?.title || "Chat"}
+              </p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-[11px]" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  {MODEL_LABELS[model]}
                 </span>
-              )}
+                {isStreaming && (
+                  <span className="flex gap-0.5 ml-0.5">
+                    {[0, 0.15, 0.3].map((delay, i) => (
+                      <span key={i} className="typing-dot inline-block w-1 h-1 rounded-full"
+                        style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
+                    ))}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Model selector */}
-        <div className="relative flex-shrink-0">
-          {isPremium ? (
-            <>
-              <button onClick={e => { e.stopPropagation(); setShowModelMenu(v => !v); }}
+          {/* Model selector */}
+          <div className="relative flex-shrink-0">
+            {isPremium ? (
+              <>
+                <button onClick={e => { e.stopPropagation(); setShowModelMenu(v => !v); }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
+                  style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
+                  {MODEL_LABELS[model]}
+                  <ChevronDown size={12} style={{ color: "hsl(var(--muted-foreground))" }} />
+                </button>
+                {showModelMenu && (
+                  <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
+                    style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.18)" }}
+                    onClick={e => e.stopPropagation()}>
+                    {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] satisfies Model[]).map(m => (
+                      <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
+                        className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
+                        style={{
+                          color: model === m ? "hsl(var(--primary))" : "hsl(var(--foreground))",
+                          background: model === m ? "hsl(var(--muted))" : "transparent",
+                        }}
+                        onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
+                        onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                        <span>{MODEL_LABELS[m]}</span>
+                        {m === "deepseek/deepseek-v4-flash" && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
+                            style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>
+                        )}
+                        {m === "deepseek/deepseek-v4-pro" && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
+                            style={{ background: "hsl(var(--muted))", color: "hsl(var(--primary))" }}>Smart</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <button onClick={() => openPremium(false)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
-                style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--foreground))" }}>
-                {MODEL_LABELS[model]}
-                <ChevronDown size={12} style={{ color: "hsl(var(--muted-foreground))" }} />
+                style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
+                title="Upgrade to access more models">
+                V4 Flash
+                <Lock size={10} />
               </button>
-              {showModelMenu && (
-                <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
-                  style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}
-                  onClick={e => e.stopPropagation()}>
-                  {(["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] satisfies Model[]).map(m => (
-                    <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
-                      className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
-                      style={{
-                        color: model === m ? "hsl(var(--primary))" : "hsl(var(--foreground))",
-                        background: model === m ? "hsl(var(--primary) / 0.08)" : "transparent",
-                      }}
-                      onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
-                      onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                      <span>{MODEL_LABELS[m]}</span>
-                      {m === "deepseek/deepseek-v4-flash" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Fast</span>
-                      )}
-                      {m === "deepseek/deepseek-v4-pro" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ background: "hsl(252 82% 68% / 0.15)", color: "hsl(var(--primary))" }}>Smart</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : (
-            <button onClick={() => openPremium(false)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all active:scale-95"
-              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
-              title="Upgrade to access more models">
-              V4 Flash
-              <Lock size={10} />
-            </button>
+            )}
+          </div>
+        </header>
+
+        {/* ── Messages ── */}
+        <main ref={mainRef} className="flex-1 overflow-y-auto px-4 py-6 flex flex-col gap-5 relative"
+          style={{ scrollBehavior: "auto" }}>
+
+          {!isNew && messages.length === 0 && !optimisticUser && (
+            <div className="flex items-center justify-center h-full">
+              <p className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>Loading…</p>
+            </div>
           )}
-        </div>
-      </header>
 
-      {/* ── Messages ── */}
-      <main className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
-        {!isNew && messages.length === 0 && !optimisticUser && (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>Loading…</p>
-          </div>
-        )}
-
-        {isNew && !optimisticUser && (
-          <div className="flex flex-col items-center justify-center h-full gap-5 text-center px-4 pb-8">
-            <div className="relative w-16 h-16 rounded-3xl flex items-center justify-center"
-              style={{
-                background: "linear-gradient(135deg, hsl(252 82% 68% / 0.15), hsl(198 80% 56% / 0.08))",
-                border: "1px solid hsl(252 82% 68% / 0.25)",
-              }}>
-              <Sparkles size={26} style={{ color: "hsl(var(--primary))" }} />
+          {isNew && !optimisticUser && (
+            <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-4 pb-8">
+              <div className="w-14 h-14 rounded-2xl overflow-hidden"
+                style={{ border: "1px solid hsl(var(--border))" }}>
+                <video autoPlay loop muted playsInline className="w-full h-full object-cover">
+                  <source src={WHALE_SRC} type="video/webm" />
+                </video>
+              </div>
+              <div>
+                <p className="font-bold text-xl mb-2 tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
+                  What's on your mind?
+                </p>
+                <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  {MODEL_LABELS[model]} · Powered by OpenRouter
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="font-bold text-xl mb-2 tracking-tight" style={{ color: "hsl(var(--foreground))" }}>
-                What's on your mind?
-              </p>
-              <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
-                {MODEL_LABELS[model]} · Powered by OpenRouter
-              </p>
-            </div>
-          </div>
-        )}
+          )}
 
-        {messages.map(msg => (
-          <MessageBubble
-            key={msg.id}
-            role={msg.role}
-            content={msg.content}
-            error={msg.error}
-            imageUrl={msg.imageUrl}
-            attachedImageUrl={msg.attachedImageUrl}
-            thinking={msg.thinking}
-          />
-        ))}
+          {messages.map((msg, idx) => {
+            let retryHandler: (() => void) | undefined;
+            if (msg.role === "assistant" && msg.error) {
+              const prevMsg = messages[idx - 1];
+              if (prevMsg?.role === "user") {
+                retryHandler = () => handleRetry(prevMsg.content);
+              }
+            }
+            return (
+              <MessageBubble
+                key={msg.id}
+                role={msg.role}
+                content={msg.content}
+                error={msg.error}
+                imageUrl={msg.imageUrl}
+                attachedImageUrl={msg.attachedImageUrl}
+                thinking={msg.thinking}
+                onRetry={retryHandler}
+              />
+            );
+          })}
 
-        {(optimisticUser || optimisticImages.length > 0) && (
-          <MessageBubble
-            role="user"
-            content={optimisticUser}
-            attachedImageUrl={optimisticImages[0] || undefined}
-          />
-        )}
+          {(optimisticUser || optimisticImages.length > 0) && (
+            <MessageBubble
+              role="user"
+              content={optimisticUser}
+              attachedImageUrl={optimisticImages[0] || undefined}
+            />
+          )}
 
-        {/* Streaming assistant bubble — always visible once streaming starts */}
-        {isStreaming && (
-          <div className="flex items-start gap-2.5">
-            <AIAvatar />
-            <div className="flex flex-col gap-1 min-w-0 flex-1 max-w-[85%]">
-              {streamingSteps.length > 0 && (
-                <div className="px-3 py-2 rounded-xl rounded-bl-md mb-1"
-                  style={{ background: "hsl(var(--muted) / 0.5)", border: "1px solid hsl(var(--border) / 0.5)" }}>
-                  <StatusSteps steps={streamingSteps} />
-                </div>
-              )}
-              <div className="px-4 py-3 rounded-2xl rounded-bl-md"
-                style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border, var(--border)))" }}>
+          {/* Streaming assistant bubble */}
+          {isStreaming && (
+            <div className="flex items-start gap-2.5">
+              <AIAvatar isStreaming />
+              <div className="flex flex-col gap-1.5 min-w-0 flex-1" style={{ maxWidth: "680px" }}>
+                {streamingSteps.length > 0 && (
+                  <div className="mb-1">
+                    <StatusSteps steps={streamingSteps} />
+                  </div>
+                )}
                 {streamingThinking && (
                   <ThinkingBlock content={streamingThinking} streaming={!streamingToken} />
                 )}
@@ -1004,164 +1268,203 @@ export default function Chat() {
                           style={{ background: "hsl(var(--muted-foreground))", animationDelay: `${delay}s` }} />
                       ))}
                       <span className="text-xs ml-1" style={{ color: "hsl(var(--muted-foreground))" }}>
-                        {optimisticImages.length > 0 && !streamingSteps.length
-                          ? "Analyzing image…"
-                          : "Thinking…"}
+                        {optimisticImages.length > 0 && !streamingSteps.length ? "Analyzing image…" : "Thinking…"}
                       </span>
                     </div>
                   )
                 }
               </div>
             </div>
+          )}
+
+          <div ref={bottomRef} />
+        </main>
+
+        {/* Jump to latest button */}
+        {showJump && (
+          <div className="absolute bottom-[90px] left-1/2 -translate-x-1/2 z-20 pointer-events-none"
+            style={{ position: "sticky", bottom: "90px", display: "flex", justifyContent: "center" }}>
+            <button onClick={() => scrollToBottom(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium shadow-lg transition-all active:scale-95 pointer-events-auto"
+              style={{
+                background: "hsl(var(--foreground))",
+                color: "hsl(var(--background))",
+              }}>
+              <ChevronDown size={13} />
+              Jump to latest
+            </button>
           </div>
         )}
 
-        <div ref={bottomRef} />
-      </main>
+        {/* ── Footer ── */}
+        <footer className="flex-shrink-0 px-4 pb-4 pt-2">
 
-      {/* ── Footer ── */}
-      <footer className="flex-shrink-0 px-4 pb-4 pt-2">
+          {isPending && !isPremium && (
+            <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center"
+              style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}>
+              <span className="text-[11px] font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>
+                Payment pending — unlimited access activates once confirmed
+              </span>
+            </div>
+          )}
 
-        {isPending && !isPremium && (
-          <div className="mb-3 px-3 py-2 rounded-xl flex items-center justify-center"
-            style={{ background: "hsl(252 82% 68% / 0.06)", border: "1px solid hsl(252 82% 68% / 0.15)" }}>
-            <span className="text-[11px] font-medium" style={{ color: "hsl(252 82% 60%)" }}>
-              Payment pending — unlimited access activates once confirmed
-            </span>
-          </div>
-        )}
+          {!isPremium && !isPending && subStatus !== null && (
+            <UsageBar used={msgCount} limit={FREE_LIMIT} onUpgrade={() => openPremium(false)} />
+          )}
 
-        {!isPremium && !isPending && subStatus !== null && (
-          <UsageBar used={msgCount} limit={FREE_LIMIT} onUpgrade={() => openPremium(false)} />
-        )}
+          {isLimited ? (
+            <LimitReachedBanner onUpgrade={() => openPremium(true)} />
+          ) : (
+            <div className="rounded-2xl overflow-hidden transition-all"
+              style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))" }}
+              onFocusCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--foreground) / 0.2)"; }}
+              onBlurCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--border))"; }}>
 
-        {isLimited ? (
-          <LimitReachedBanner onUpgrade={() => openPremium(true)} />
-        ) : (
-          <div className="rounded-2xl overflow-hidden transition-all"
-            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--card-border))" }}
-            onFocusCapture={e => { e.currentTarget.style.borderColor = "hsl(252 82% 68% / 0.4)"; }}
-            onBlurCapture={e => { e.currentTarget.style.borderColor = "hsl(var(--card-border))"; }}>
+              {/* Image previews */}
+              {(attachedImages.length > 0 || imagesLoading) && (
+                <div className="px-3 pt-3 flex items-start gap-2 flex-wrap">
+                  {attachedImages.map((img, i) => (
+                    <div key={i} className="relative">
+                      <img src={img} alt={`Attached ${i + 1}`}
+                        className="w-16 h-16 rounded-lg object-cover"
+                        style={{ border: "1px solid hsl(var(--border))" }} />
+                      <button onClick={() => removeImage(i)}
+                        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center"
+                        style={{ background: "hsl(var(--foreground))", color: "hsl(var(--background))" }}>
+                        <X size={9} strokeWidth={3} />
+                      </button>
+                    </div>
+                  ))}
+                  {imagesLoading && (
+                    <div className="w-16 h-16 rounded-lg flex items-center justify-center flex-shrink-0"
+                      style={{ border: "1px dashed hsl(var(--border))", background: "hsl(var(--muted))" }}>
+                      <Loader2 size={18} className="animate-spin" style={{ color: "hsl(var(--muted-foreground))" }} />
+                    </div>
+                  )}
+                </div>
+              )}
 
-            {/* Image previews */}
-            {(attachedImages.length > 0 || imagesLoading) && (
-              <div className="px-3 pt-3 flex items-start gap-2 flex-wrap">
-                {attachedImages.map((img, i) => (
-                  <div key={i} className="relative">
-                    <img src={img} alt={`Attached ${i + 1}`}
-                      className="w-16 h-16 rounded-lg object-cover"
-                      style={{ border: "1px solid hsl(var(--border))" }} />
-                    <button onClick={() => removeImage(i)}
-                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center"
-                      style={{ background: "hsl(var(--foreground))", color: "hsl(var(--background))" }}>
-                      <X size={9} strokeWidth={3} />
-                    </button>
-                  </div>
-                ))}
-                {imagesLoading && (
-                  <div className="w-16 h-16 rounded-lg flex items-center justify-center flex-shrink-0"
-                    style={{ border: "1px dashed hsl(var(--border))", background: "hsl(var(--muted))" }}>
-                    <Loader2 size={18} className="animate-spin" style={{ color: "hsl(var(--muted-foreground))" }} />
-                  </div>
+              {/* Image error */}
+              {imageError && (
+                <div className="px-3 pt-2">
+                  <p className="text-[11px]" style={{ color: "hsl(var(--destructive))" }}>{imageError}</p>
+                </div>
+              )}
+
+              {/* Mic error */}
+              {speechRecognition.micError && (
+                <div className="px-3 pt-2">
+                  <p className="text-[11px]" style={{ color: "hsl(var(--destructive))" }}>{speechRecognition.micError}</p>
+                </div>
+              )}
+
+              <div className="flex items-end gap-2 px-4 py-3">
+                <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileSelect} />
+
+                {/* Image attach button */}
+                <button onClick={handleImageAttach}
+                  disabled={isStreaming || imagesLoading || attachedImages.length >= MAX_IMAGES}
+                  title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : imagesLoading ? "Processing image…" : "Attach image"}
+                  className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                  style={{
+                    background: attachedImages.length > 0 ? "hsl(var(--muted))" : "transparent",
+                    border: `1px solid ${attachedImages.length > 0 ? "hsl(var(--border))" : "transparent"}`,
+                    color: attachedImages.length >= MAX_IMAGES
+                      ? "hsl(var(--muted-foreground) / 0.3)"
+                      : "hsl(var(--muted-foreground))",
+                    cursor: (attachedImages.length >= MAX_IMAGES || imagesLoading) ? "not-allowed" : "pointer",
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "hsl(var(--foreground))"; }}
+                  onMouseLeave={e => {
+                    (e.currentTarget as HTMLElement).style.color = attachedImages.length >= MAX_IMAGES
+                      ? "hsl(var(--muted-foreground) / 0.3)" : "hsl(var(--muted-foreground))";
+                  }}>
+                  {imagesLoading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+                </button>
+
+                {/* Textarea */}
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                  disabled={isStreaming}
+                  placeholder="Message DeepSeek…"
+                  rows={1}
+                  className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
+                  style={{
+                    color: "hsl(var(--foreground))",
+                    maxHeight: "160px",
+                    overflowY: "auto",
+                    fontFamily: "var(--app-font-sans)",
+                  }}
+                />
+
+                {/* Right-side action button: stop / send / mic */}
+                {isStreaming ? (
+                  <button onClick={() => abortRef.current?.abort()}
+                    title="Stop generating"
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                    style={{
+                      background: "hsl(var(--muted))",
+                      border: "1px solid hsl(var(--border))",
+                      color: "hsl(var(--destructive))",
+                    }}>
+                    <Square size={12} strokeWidth={0} style={{ fill: "currentColor" }} />
+                  </button>
+                ) : showMicButton ? (
+                  <button
+                    onClick={speechRecognition.isRecording ? speechRecognition.stopRecording : speechRecognition.startRecording}
+                    title={speechRecognition.isRecording ? "Stop recording" : "Voice input"}
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                    style={{
+                      background: speechRecognition.isRecording ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
+                      border: `1px solid ${speechRecognition.isRecording ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
+                      color: speechRecognition.isRecording ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
+                    }}>
+                    {speechRecognition.isRecording ? <MicOff size={14} /> : <Mic size={14} />}
+                  </button>
+                ) : (
+                  <button onClick={() => handleSend()} disabled={!canSend}
+                    title={imagesLoading ? "Waiting for image to process…" : undefined}
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
+                    style={{
+                      background: canSend ? "hsl(var(--foreground))" : "hsl(var(--muted))",
+                      color: canSend ? "hsl(var(--background))" : "hsl(var(--muted-foreground))",
+                      border: "1px solid transparent",
+                    }}>
+                    {imagesLoading
+                      ? <Loader2 size={15} className="animate-spin" />
+                      : <Send size={15} strokeWidth={2} />}
+                  </button>
                 )}
               </div>
-            )}
-
-            {/* Image error */}
-            {imageError && (
-              <div className="px-3 pt-2">
-                <p className="text-[11px]" style={{ color: "hsl(var(--destructive))" }}>{imageError}</p>
-              </div>
-            )}
-
-            <div className="flex items-end gap-2 px-4 py-3">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={handleFileSelect}
-              />
-
-              <button
-                onClick={handleImageAttach}
-                disabled={isStreaming || imagesLoading || attachedImages.length >= MAX_IMAGES}
-                title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : imagesLoading ? "Processing image…" : "Attach image"}
-                className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                style={{
-                  background: imagesLoading ? "hsl(var(--primary) / 0.08)" : attachedImages.length > 0 ? "hsl(var(--primary) / 0.12)" : "hsl(var(--muted))",
-                  border: `1px solid ${imagesLoading ? "hsl(var(--primary) / 0.25)" : attachedImages.length > 0 ? "hsl(var(--primary) / 0.3)" : "hsl(var(--border))"}`,
-                  color: attachedImages.length >= MAX_IMAGES ? "hsl(var(--muted-foreground) / 0.4)" : imagesLoading ? "hsl(var(--primary))" : attachedImages.length > 0 ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
-                  cursor: (attachedImages.length >= MAX_IMAGES || imagesLoading) ? "not-allowed" : "pointer",
-                }}>
-                {imagesLoading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
-              </button>
-
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                disabled={isStreaming}
-                placeholder="Message AI…"
-                rows={1}
-                className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed py-0.5"
-                style={{ color: "hsl(var(--foreground))", maxHeight: "160px", overflowY: "auto", fontFamily: "var(--app-font-sans)" }}
-              />
-
-              {isStreaming ? (
-                <button
-                  onClick={() => abortRef.current?.abort()}
-                  title="Stop generating"
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                  style={{
-                    background: "hsl(0 72% 51% / 0.12)",
-                    border: "1px solid hsl(0 72% 51% / 0.3)",
-                    color: "hsl(0 72% 51%)",
-                  }}>
-                  <Square size={13} strokeWidth={0} style={{ fill: "currentColor" }} />
-                </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  disabled={!canSend}
-                  title={imagesLoading ? "Waiting for image to process…" : undefined}
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-90"
-                  style={{
-                    background: canSend ? "linear-gradient(135deg, hsl(252 82% 68%), hsl(252 75% 60%))" : "hsl(var(--muted))",
-                    color: canSend ? "white" : "hsl(var(--muted-foreground))",
-                    boxShadow: canSend ? "0 3px 12px hsl(252 82% 68% / 0.45)" : "none",
-                  }}>
-                  {imagesLoading
-                    ? <Loader2 size={15} className="animate-spin" />
-                    : <Send size={15} strokeWidth={2} />}
-                </button>
-              )}
             </div>
-          </div>
+          )}
+
+          <p className="text-center text-[10px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
+            {isLimited
+              ? "Resets daily at midnight UTC"
+              : isStreaming
+                ? "Generating… click ■ to stop"
+                : speechRecognition.isRecording
+                  ? "Listening… speak now"
+                  : attachedImages.length > 0
+                    ? "Image attached · Enter to send"
+                    : "Enter to send · Shift+Enter for new line"}
+          </p>
+        </footer>
+
+        {showPremium && (
+          <PremiumModal
+            clientId={clientId}
+            onClose={() => { setShowPremium(false); fetchSubStatus(); }}
+            onClaimSubmitted={() => { setClaimSubmitted(true); fetchSubStatus(); }}
+            claimStatus={claimSubmitted || isPending ? "pending" : "idle"}
+            triggeredByLimit={premiumTriggeredByLimit}
+          />
         )}
-
-        <p className="text-center text-[11px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
-          {isLimited
-            ? "Resets daily at midnight UTC"
-            : isStreaming
-              ? "Generating… click ■ to stop"
-              : attachedImages.length > 0
-                ? "Image attached · Enter to send"
-                : "Enter to send · Shift+Enter for new line"}
-        </p>
-      </footer>
-
-      {showPremium && (
-        <PremiumModal
-          clientId={clientId}
-          onClose={() => { setShowPremium(false); fetchSubStatus(); }}
-          onClaimSubmitted={() => { setClaimSubmitted(true); fetchSubStatus(); }}
-          claimStatus={claimSubmitted || isPending ? "pending" : "idle"}
-          triggeredByLimit={premiumTriggeredByLimit}
-        />
-      )}
+      </div>
     </div>
   );
 }
