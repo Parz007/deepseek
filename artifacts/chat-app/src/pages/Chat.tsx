@@ -1108,7 +1108,7 @@ export default function Chat() {
       />
 
       {/* Main column */}
-      <div className="flex flex-col flex-1 min-w-0 h-dvh">
+      <div className="flex flex-col flex-1 min-w-0 h-dvh relative">
 
         {/* ── Header ── */}
         <header className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
@@ -1286,8 +1286,7 @@ export default function Chat() {
 
         {/* Jump to latest button */}
         {showJump && (
-          <div className="absolute bottom-[90px] left-1/2 -translate-x-1/2 z-20 pointer-events-none"
-            style={{ position: "sticky", bottom: "90px", display: "flex", justifyContent: "center" }}>
+          <div className="absolute bottom-[90px] left-1/2 -translate-x-1/2 z-20 pointer-events-none flex justify-center">
             <button onClick={() => scrollToBottom(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium shadow-lg transition-all active:scale-95 pointer-events-auto"
               style={{
