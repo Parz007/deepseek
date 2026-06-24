@@ -5,12 +5,12 @@ import {
   getGetConversationQueryKey, getListConversationsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  ArrowLeft, Send, ChevronDown, ChevronRight, Copy, Check,
-  Paperclip, X, Download, Lock, Crown, Loader2, Square,
-  Mic, MicOff, RotateCcw, Plus, Settings, Trash2, MessageSquare,
-  ChevronUp, Sun, Moon,
-} from "lucide-react";
+ import {
+    ArrowLeft, Send, ChevronDown, ChevronRight, Copy, Check,
+    Paperclip, X, Download, Lock, Crown, Loader2, Square,
+    Mic, MicOff, RotateCcw, Plus, Settings, Trash2, MessageSquare,
+    ChevronUp, Sun, Moon, Share2,
+  } from "lucide-react";
 import { useAppContext, type Model } from "@/contexts/AppContext";
 import PremiumModal from "@/components/PremiumModal";
 import ReactMarkdown from "react-markdown";
