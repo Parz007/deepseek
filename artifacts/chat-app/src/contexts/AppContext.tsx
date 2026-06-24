@@ -4,8 +4,9 @@ import { setClientIdGetter } from "@workspace/api-client-react";
 
 export type Theme = "dark" | "light";
 export type Model =
-  | "deepseek/deepseek-v4-flash"
-  | "deepseek/deepseek-v4-pro";
+  | "openrouter/auto"
+  | "openrouter/fusion"
+  | "openrouter/free";
 
 interface AppContextType {
   theme: Theme;
@@ -19,8 +20,9 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | null>(null);
 
 const VALID_MODELS: Model[] = [
-  "deepseek/deepseek-v4-flash",
-  "deepseek/deepseek-v4-pro",
+  "openrouter/auto",
+  "openrouter/fusion",
+  "openrouter/free",
 ];
 
 // ── Telegram initData auth ────────────────────────────────────────────────────
@@ -72,7 +74,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [model, setModelState] = useState<Model>(() => {
     const saved = localStorage.getItem("model") as Model;
-    return VALID_MODELS.includes(saved) ? saved : "deepseek/deepseek-v4-flash";
+    return VALID_MODELS.includes(saved) ? saved : "openrouter/auto";
   });
 
   // FIX 2: Read clientId synchronously from localStorage so returning users
