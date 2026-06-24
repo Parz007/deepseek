@@ -169,9 +169,7 @@ const FREE_ALLOWED_MODELS: AllowedModel[] = ["openrouter/auto", "openrouter/fusi
 // Hidden vision model — ONLY used to convert image → text description.
 // Never exposed to the user; never used for the final DeepSeek response.
 // Accepts base64 data URLs ("data:image/...;base64,...") and plain HTTPS URLs.
-const IMAGE_DESCRIPTION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free";
-const IMAGE_DESCRIPTION_PROMPT =
-  "Describe this image in detail. Do not add any opinions, greetings, or extra commentary. Output only the description.";
+// Image is now passed directly to the main model as a multimodal message.
 
 // ── Tool status labels ────────────────────────────────────────────────────────
 
@@ -419,80 +417,34 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       return;
     }
 
-    // ── Step 1: image → text description (Gemini) ────────────────────────────
-    // Flow: imageInput → Gemini (hidden) → description text → DeepSeek → user.
-    // imageInput may be a base64 data URL ("data:image/jpeg;base64,…") or a
-    // plain HTTPS image URL.
-    // Gemini on OpenRouter requires a base64 data URL — plain HTTPS URLs are
-    // rejected with 400. So if we receive an HTTPS URL we fetch it first and
-    // convert to a base64 data URL before sending to Gemini.
-    // The description is NEVER shown to the user or stored in conversation history.
-    let imageContext = "";
-    let imageProcessingFailed = false;
+    // ── Step 1: normalise image URL → base64 data URL ──────────────────────────
+    // The image is passed directly to the main model as a multimodal message.
+    // If the input is an HTTPS URL, fetch and convert it to base64 first so the
+    // model always receives a self-contained data URL.
+    let imageDataUrl = "";
     if (imageInput) {
-      try {
-        // Normalise to base64 data URL if needed
-        let imageDataUrl = imageInput;
-        if (imageInput.startsWith("http://") || imageInput.startsWith("https://")) {
-          try {
-            const fetchCtrl = new AbortController();
-            const fetchTimeout = setTimeout(() => fetchCtrl.abort(), 10000);
-            const imgRes = await fetch(imageInput, { signal: fetchCtrl.signal });
-            clearTimeout(fetchTimeout);
-            if (imgRes.ok) {
-              const contentType = imgRes.headers.get("content-type") ?? "image/jpeg";
-              const buf = await imgRes.arrayBuffer();
-              const b64 = Buffer.from(buf).toString("base64");
-              imageDataUrl = `data:${contentType};base64,${b64}`;
-            } else {
-              req.log.warn({ status: imgRes.status }, "Failed to fetch image URL for conversion");
-              imageProcessingFailed = true;
-            }
-          } catch (fetchErr: any) {
-            if (fetchErr?.name !== "AbortError") {
-              req.log.warn({ err: fetchErr }, "Image URL fetch failed");
-            }
-            imageProcessingFailed = true;
-          }
-        }
-
-        if (!imageProcessingFailed) {
-          const descController = new AbortController();
-          const descTimeout = setTimeout(() => descController.abort(), 20000);
-          const descRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: buildOrHeaders(apiKey!),
-            body: JSON.stringify({
-              model: IMAGE_DESCRIPTION_MODEL,
-              max_tokens: 1024,
-              temperature: 0.1,
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    { type: "image_url", image_url: { url: imageDataUrl } },
-                    { type: "text", text: IMAGE_DESCRIPTION_PROMPT },
-                  ],
-                },
-              ],
-            }),
-            signal: descController.signal,
-          });
-          clearTimeout(descTimeout);
-          if (descRes.ok) {
-            const descData = (await descRes.json()) as any;
-            const raw: string = descData.choices?.[0]?.message?.content ?? "";
-            imageContext = raw.trim();
+      if (imageInput.startsWith("http://") || imageInput.startsWith("https://")) {
+        try {
+          const fetchCtrl = new AbortController();
+          const fetchTimeout = setTimeout(() => fetchCtrl.abort(), 10000);
+          const imgRes = await fetch(imageInput, { signal: fetchCtrl.signal });
+          clearTimeout(fetchTimeout);
+          if (imgRes.ok) {
+            const contentType = imgRes.headers.get("content-type") ?? "image/jpeg";
+            const buf = await imgRes.arrayBuffer();
+            const b64 = Buffer.from(buf).toString("base64");
+            imageDataUrl = `data:${contentType};base64,${b64}`;
           } else {
-            imageProcessingFailed = true;
-            req.log.warn({ status: descRes.status }, "Image description model returned error");
+            req.log.warn({ status: imgRes.status }, "Failed to fetch image URL");
+          }
+        } catch (fetchErr: any) {
+          if (fetchErr?.name !== "AbortError") {
+            req.log.warn({ err: fetchErr }, "Image URL fetch failed");
           }
         }
-      } catch (descErr: any) {
-        imageProcessingFailed = true;
-        if (descErr?.name !== "AbortError") {
-          req.log.warn({ err: descErr }, "Image description call failed");
-        }
+      } else {
+        // Already a base64 data URL
+        imageDataUrl = imageInput;
       }
     }
 
@@ -522,26 +474,27 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    // ── Step 2: build messages for DeepSeek ──────────────────────────────────
-    // If an image was sent, inject the plain-text description as context.
-    // DeepSeek never receives the raw image — only the description text.
-    // The Gemini model and its prompt are never exposed to the user.
+    // ── Step 2: build messages ───────────────────────────────────────────────
+    // If an image was sent, embed it directly as a multimodal content block.
+    // The main model receives both the image and the user's text in one call.
     const openRouterMessages = history.map((m, idx) => {
-      if (idx === history.length - 1 && m.role === "user" && imageInput) {
-        if (imageProcessingFailed || !imageContext) {
-          // Image failed — silently continue with text only.
-          // If there's no text either, send a polite fallback prompt.
-          return {
-            role: "user" as const,
-            content: m.content?.trim()
-              ? m.content
-              : "I tried to send you an image but it didn't come through. Could you let me know what you'd like help with?",
-          };
-        }
-        // Inject description; DeepSeek responds using its full system prompt
+      if (idx === history.length - 1 && m.role === "user" && imageDataUrl) {
+        // Multimodal message: image + text in a single call to the main model
         return {
           role: "user" as const,
-          content: `[The user sent an image. Image description:\n${imageContext}]\n\n[User's message:]\n${m.content}`,
+          content: [
+            { type: "image_url", image_url: { url: imageDataUrl } },
+            { type: "text", text: m.content?.trim() || "What is in this image?" },
+          ],
+        };
+      }
+      if (idx === history.length - 1 && m.role === "user" && imageInput && !imageDataUrl) {
+        // Image was provided but URL fetch failed — silently fall back to text only
+        return {
+          role: "user" as const,
+          content: m.content?.trim()
+            ? m.content
+            : "I tried to send you an image but it didn't come through. Could you let me know what you'd like help with?",
         };
       }
       return { role: m.role as "user" | "assistant", content: m.content };
