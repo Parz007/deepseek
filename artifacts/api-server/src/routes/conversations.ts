@@ -529,10 +529,13 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
     const openRouterMessages = history.map((m, idx) => {
       if (idx === history.length - 1 && m.role === "user" && imageInput) {
         if (imageProcessingFailed || !imageContext) {
-          // Graceful fallback — no internal details revealed
+          // Image failed — silently continue with text only.
+          // If there's no text either, send a polite fallback prompt.
           return {
             role: "user" as const,
-            content: `[Note: The user sent an image but it could not be processed. Inform them politely that you were unable to read the image and ask them to describe what they need help with.]\n\n[User's message:]\n${m.content}`,
+            content: m.content?.trim()
+              ? m.content
+              : "I tried to send you an image but it didn't come through. Could you let me know what you'd like help with?",
           };
         }
         // Inject description; DeepSeek responds using its full system prompt
