@@ -7,6 +7,7 @@ import { AppProvider } from "@/contexts/AppContext";
 import Home from "@/pages/Home";
 import Chat from "@/pages/Chat";
 import Settings from "@/pages/Settings";
+import ShareView from "@/pages/ShareView";          // NEW
 import NotFound from "@/pages/not-found";
 import SplashScreen from "@/components/SplashScreen";
 
@@ -38,19 +39,19 @@ class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
         <div style={{
           display: "flex", flexDirection: "column", alignItems: "center",
           justifyContent: "center", height: "100dvh", padding: "24px",
-          background: "hsl(230 18% 6%)", color: "hsl(220 18% 93%)",
-          fontFamily: "Inter, system-ui, sans-serif", textAlign: "center", gap: "16px",
+          background: "hsl(var(--background))", color: "hsl(var(--foreground))",
+          fontFamily: "system-ui, sans-serif", textAlign: "center", gap: "16px",
         }}>
           <p style={{ fontSize: "32px" }}>⚠️</p>
           <p style={{ fontSize: "16px", fontWeight: 600 }}>Something went wrong</p>
-          <p style={{ fontSize: "12px", color: "hsl(220 10% 48%)", maxWidth: "260px", lineHeight: 1.6 }}>
+          <p style={{ fontSize: "12px", color: "hsl(var(--muted-foreground))", maxWidth: "260px", lineHeight: 1.6 }}>
             {this.state.error.message}
           </p>
           <button
             onClick={this.handleRetry}
             style={{
               marginTop: "8px", padding: "10px 24px", borderRadius: "12px",
-              background: "hsl(252 82% 68%)", color: "white",
+              background: "hsl(var(--foreground))", color: "hsl(var(--background))",
               border: "none", fontSize: "13px", fontWeight: 600, cursor: "pointer",
             }}
           >
@@ -67,9 +68,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
 
 function StartRedirect() {
   const [, navigate] = useLocation();
-  useEffect(() => {
-    navigate("/chat/new", { replace: true });
-  }, [navigate]);
+  useEffect(() => { navigate("/chat/new", { replace: true }); }, [navigate]);
   return null;
 }
 
@@ -81,6 +80,7 @@ function Router() {
       <Route path="/chat/new" component={Chat} />
       <Route path="/chat/:id" component={Chat} />
       <Route path="/settings" component={Settings} />
+      <Route path="/share/:token" component={ShareView} />   {/* NEW */}
       <Route component={NotFound} />
     </Switch>
   );
