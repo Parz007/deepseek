@@ -62,8 +62,8 @@ const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const MODEL_LABELS: Record<Model, string> = {
   "llama-3.3-70b-versatile": "Llama 3.3",
-  "qwen-qwq-32b": "Qwen QwQ",
-  "mixtral-8x7b-32768": "Mixtral",
+  "qwen/qwen3-32b": "Qwen QwQ",
+  "openai/gpt-oss-20b": "GPT OSS 20B",
 };
 
 // Public-folder whale video (same path used in SplashScreen)
@@ -833,7 +833,7 @@ export default function Chat() {
   const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
 
   useEffect(() => {
-    if (!isPremium && model === "qwen-qwq-32b") {
+    if (!isPremium && model === "qwen/qwen3-32b") {
       setModel("llama-3.3-70b-versatile");
     }
   }, [isPremium, model, setModel]);
@@ -1157,7 +1157,7 @@ export default function Chat() {
                   <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
                     style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.18)" }}
                     onClick={e => e.stopPropagation()}>
-                    {(["llama-3.3-70b-versatile", "qwen-qwq-32b", "mixtral-8x7b-32768"] satisfies Model[]).map(m => (
+                    {(["llama-3.3-70b-versatile", "qwen/qwen3-32b", "openai/gpt-oss-20b"] satisfies Model[]).map(m => (
                       <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
                         className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
                         style={{
@@ -1167,7 +1167,7 @@ export default function Chat() {
                         onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
                         onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                         <span>{MODEL_LABELS[m]}</span>
-                        {m === "qwen-qwq-32b" && (
+                        {m === "qwen/qwen3-32b" && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
                             style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Auto</span>
                         )}
