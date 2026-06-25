@@ -1,4 +1,4 @@
-import express from "express";
+tyyesimport express from "express";
 import crypto from "crypto";
 import cors from "cors";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -21,7 +21,7 @@ import {
 
 // ── Env validation ────────────────────────────────────────────────────────────
 
-const REQUIRED_ENV = ["GROQ_API_KEY", "DATABASE_URL"];
+const REQUIRED_ENV = ["DATABASE_URL"];
 const MISSING_ENV: string[] = [];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
@@ -37,11 +37,11 @@ function guardEnv(res: import("express").Response): boolean {
   }
   return true;
 }
+if (!process.env.GEMINI_API_KEY) {
+  console.error("[startup] GEMINI_API_KEY not set — all chat requests will fail");
+}
 if (!process.env.TAVILY_API_KEY) {
   console.warn("[startup] TAVILY_API_KEY not set — web_search will use DuckDuckGo fallback");
-}
-if (!process.env.TELEGRAM_BOT_TOKEN) {
-  console.error("[startup] TELEGRAM_BOT_TOKEN not set — Telegram bot is DISABLED");
 }
 if (process.env.TELEGRAM_WEBHOOK_SECRET && !process.env.TELEGRAM_BOT_TOKEN) {
   console.warn("[startup] TELEGRAM_WEBHOOK_SECRET is set but TELEGRAM_BOT_TOKEN is missing — webhook will 403 all Telegram updates");
@@ -176,8 +176,8 @@ const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
-const VISION_MODEL_FREE = "meta-llama/llama-4-scout-17b-16e-instruct";  // Llama 4 Scout — vision, free tier
-const VISION_MODEL_PRO  = "qwen/qwen3.6-27b";                              // Qwen 3.6 27B — vision, premium tier
+const VISION_MODEL_FREE = "gemini-2.5-flash-lite";  // Gemini Flash Lite — vision, free tier
+const VISION_MODEL_PRO  = "gemini-2.5-flash";       // Gemini 2.5 Flash — vision, premium tier
 const MAX_TOKENS_FLASH = 800;
 const MAX_TOKENS_PRO = 4096;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -443,7 +443,7 @@ async function updateUserMemory(
   const userTurns = conversation.filter((m) => m.role === "user");
   if (userTurns.length === 0) return;
 
-  const apiKey = process.env.GROQ_API_KEY!;
+  const memApiKey = process.env.GEMINI_API_KEY!;
   const lastFewTurns = conversation.slice(-6);
   const convoText = lastFewTurns
     .map((m) => `${m.role.toUpperCase()}: ${m.content.slice(0, 300)}`)
@@ -454,14 +454,14 @@ async function updateUserMemory(
     : `Conversation:\n${convoText}\n\nExtract key facts about the user — preferences, background, projects, goals. Under 200 words. Return ONLY the memory text, nothing else. If there is nothing worth remembering, return an empty string.`;
 
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${memApiKey}`,
       },
       body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
+        model: "gemini-2.5-flash-lite",
         max_tokens: 300,
         temperature: 0.3,
         stream: false,
@@ -682,12 +682,12 @@ const ENGLISH_LOCK_ASSISTANT = `Language lock confirmed and active. Every respon
 
 
 const ALLOWED_MODELS = [
-  "llama-3.3-70b-versatile",
-  "qwen/qwen3-32b",
-  "openai/gpt-oss-20b",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
 ] as const;
 type AllowedModel = (typeof ALLOWED_MODELS)[number];
-const FREE_ALLOWED_MODELS: AllowedModel[] = ["llama-3.3-70b-versatile", "openai/gpt-oss-20b"];
+// Free: Flash Lite; Premium: Flash (enforced server-side)
+const FREE_ALLOWED_MODELS: AllowedModel[] = ["gemini-2.5-flash-lite"];
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -1377,12 +1377,9 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       ? selectedModel
       : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "llama-3.3-70b-versatile";
 
-    if (isUserActive && effectiveModel === "llama-3.3-70b-versatile" && isComplexQuery(messageContent)) {
-      effectiveModel = "qwen/qwen3-32b";
-      console.info(`[chat] auto-routed complex query to qwen/qwen3-32b for client ${clientId.slice(0, 8)}`);
-    }
+    // Force Gemini 2.5 Flash for premium users if they picked it; otherwise Flash Lite
 
-    const isPro = effectiveModel === "qwen/qwen3-32b";
+    const isPro = effectiveModel === "gemini-2.5-flash";
     const maxTokens = isPro ? MAX_TOKENS_PRO : MAX_TOKENS_FLASH;
 
     // Vision: when an image is attached, route to the vision model directly.
@@ -1428,7 +1425,9 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    const apiKey = process.env.GROQ_API_KEY!;
+    const apiKey = process.env.GEMINI_API_KEY!;
+    const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    if (!apiKey) { sseError(res, "GEMINI_API_KEY not configured."); res.end(); return; }
 
     let systemContent = `${LANGUAGE_ENFORCEMENT}\n\n${DEFAULT_SYSTEM_PROMPT}`;
     if (userMemory) {
@@ -1473,7 +1472,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       let toolCheckData: any;
       try {
-        const toolCheckRes = await fetchWithRetry("https://api.groq.com/openai/v1/chat/completions", {
+        const toolCheckRes = await fetchWithRetry(GEMINI_BASE, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1528,7 +1527,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     let response: Response;
     try {
-      response = await fetchWithRetry("https://api.groq.com/openai/v1/chat/completions", {
+      response = await fetchWithRetry(GEMINI_BASE, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1703,8 +1702,8 @@ app.post("/api/generate-image", async (req, res) => {
       }
     }
 
-    const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) { res.status(500).json({ error: "GROQ_API_KEY not configured" }); return; }
+    const apiKey = process.env.OPENROUTER_API_KEY || "";
+    if (!apiKey) { res.status(500).json({ error: "Image generation requires OPENROUTER_API_KEY" }); return; }
 
     const textContent = (prompt || "Describe and recreate what you see in this image").trim();
     const messageContent: unknown = imageBase64
@@ -1715,7 +1714,7 @@ app.post("/api/generate-image", async (req, res) => {
     const imgTimeout = setTimeout(() => imgController.abort(), 30_000);
     let response: Response;
     try {
-      response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
