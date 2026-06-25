@@ -8,15 +8,15 @@ import PremiumModal from "@/components/PremiumModal";
 
 const MODEL_OPTIONS = [
   {
-    value: "deepseek/deepseek-v4-flash" as const,
-    label: "DeepSeek Flash",
-    desc: "Fast responses, great for most tasks",
+    value: "gemini-2.5-flash-lite" as const,
+    label: "Agent",
+    desc: "Fast, smart responses for everyday tasks",
     badge: "Free",
   },
   {
-    value: "deepseek/deepseek-v4-pro" as const,
-    label: "DeepSeek Pro",
-    desc: "Advanced reasoning, complex tasks",
+    value: "gemini-2.5-flash" as const,
+    label: "Agent Pro",
+    desc: "Full power — best for complex, in-depth tasks",
     badge: "Pro",
   },
 ];
@@ -170,7 +170,7 @@ export default function Settings() {
         <Section title="About" icon={<MessageSquare size={16} />}>
           <div className="px-3 py-2 space-y-1">
             <InfoRow label="Version" value="1.0.0" />
-            <InfoRow label="Model provider" value="OpenRouter" />
+            <InfoRow label="Model provider" value="Google Gemini" />
             <InfoRow label="API" value="deepseek-uncensored-api-server.vercel.app" />
           </div>
         </Section>
