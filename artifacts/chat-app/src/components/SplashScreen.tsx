@@ -172,7 +172,7 @@ export default function SplashScreen({ onDone }: Props) {
         <div className="ds-vignette" />
 
         <div className="ds-brand">
-          <div className="ds-brand-name">DeepSeek</div>
+          <div className="ds-brand-name">DeepSeek Uncensored</div>
           <div className="ds-brand-sub">AI that actually answers</div>
           <div className="ds-loader"><div className="ds-loader-fill" /></div>
         </div>
