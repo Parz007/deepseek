@@ -176,7 +176,8 @@ const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
-const VISION_MODEL = "llama-3.2-90b-vision-preview";
+const VISION_MODEL_FREE = "meta-llama/llama-4-scout-17b-16e-instruct";  // Llama 4 Scout — vision, free tier
+const VISION_MODEL_PRO  = "qwen/qwen3.6-27b";                              // Qwen 3.6 27B — vision, premium tier
 const MAX_TOKENS_FLASH = 800;
 const MAX_TOKENS_PRO = 4096;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -1389,7 +1390,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     // exactly like ChatGPT/Claude do. This avoids the slow two-step approach.
     const imageContext = ""; // kept for type compat — no longer used
     if (imageBase64) {
-      effectiveModel = VISION_MODEL;
+      effectiveModel = isUserActive ? VISION_MODEL_PRO : VISION_MODEL_FREE;
     }
 
     // SECURITY: enforce ownership — reject if this conversation doesn't belong to this client
