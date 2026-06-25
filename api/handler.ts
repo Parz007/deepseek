@@ -683,11 +683,11 @@ const ENGLISH_LOCK_ASSISTANT = `Language lock confirmed and active. Every respon
 
 const ALLOWED_MODELS = [
   "llama-3.3-70b-versatile",
-  "qwen-qwq-32b",
-  "mixtral-8x7b-32768",
+  "qwen/qwen3-32b",
+  "openai/gpt-oss-20b",
 ] as const;
 type AllowedModel = (typeof ALLOWED_MODELS)[number];
-const FREE_ALLOWED_MODELS: AllowedModel[] = ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"];
+const FREE_ALLOWED_MODELS: AllowedModel[] = ["llama-3.3-70b-versatile", "openai/gpt-oss-20b"];
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -1378,11 +1378,11 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "llama-3.3-70b-versatile";
 
     if (isUserActive && effectiveModel === "llama-3.3-70b-versatile" && isComplexQuery(messageContent)) {
-      effectiveModel = "qwen-qwq-32b";
-      console.info(`[chat] auto-routed complex query to qwen-qwq-32b for client ${clientId.slice(0, 8)}`);
+      effectiveModel = "qwen/qwen3-32b";
+      console.info(`[chat] auto-routed complex query to qwen/qwen3-32b for client ${clientId.slice(0, 8)}`);
     }
 
-    const isPro = effectiveModel === "qwen-qwq-32b";
+    const isPro = effectiveModel === "qwen/qwen3-32b";
     const maxTokens = isPro ? MAX_TOKENS_PRO : MAX_TOKENS_FLASH;
 
     // Vision: when an image is attached, route to the vision model directly.
