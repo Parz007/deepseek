@@ -1032,7 +1032,7 @@ export default function Chat() {
       }
 
       // BUG FIX: treat empty fullToken as an error instead of "(no response)"
-      const finalContent = fullToken.trim();
+      const finalContent = fullToken.trim() || fullThinking.trim();
       if (!finalContent) {
         setMessages(prev => [...prev,
           { id: Date.now().toString(), role: "user", content: userMessage, attachedImageUrl: primaryImage || undefined },
