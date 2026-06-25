@@ -1353,7 +1353,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   const messageContent: string = content ?? "What does this image show?";
   const selectedModel: AllowedModel = (ALLOWED_MODELS as readonly string[]).includes(model)
     ? (model as AllowedModel)
-    "gemini-2.5-flash-lite";
+    : "gemini-2.5-flash-lite";
 
   try {
     const db = getDb();
@@ -1375,7 +1375,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     let effectiveModel: AllowedModel = isUserActive
       ? selectedModel
-      : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel "gemini-2.5-flash-lite";
+      : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "gemini-2.5-flash-lite";
 
     // Force Gemini 2.5 Flash for premium users if they picked it; otherwise Flash Lite
 
