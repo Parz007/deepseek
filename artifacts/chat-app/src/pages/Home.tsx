@@ -112,7 +112,7 @@ export default function Home() {
               </h1>
               <p className="text-[10px] mt-0.5 font-medium tracking-widest uppercase"
                 style={{ color: "hsl(var(--muted-foreground))" }}>
-                Research Sandbox
+                Uncensored
               </p>
             </div>
           </div>
