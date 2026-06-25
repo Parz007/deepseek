@@ -1862,3 +1862,30 @@ app.post("/api/telegram/auth", async (req, res) => {
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 
 export default app;
+
+// ── Memory endpoints ──────────────────────────────────────────────────────────
+
+app.get("/api/memory", async (req, res) => {
+  const clientId = getClientId(req);
+  if (!clientId) { res.status(400).json({ error: "x-client-id header required" }); return; }
+  try {
+    const db = getDb();
+    const memory = await getUserMemory(db, clientId);
+    res.json({ memory: memory || null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/memory", async (req, res) => {
+  const clientId = getClientId(req);
+  if (!clientId) { res.status(400).json({ error: "x-client-id header required" }); return; }
+  try {
+    const db = getDb();
+    await db.delete(userMemoryTable).where(eq(userMemoryTable.clientId, clientId));
+    res.json({ success: true, message: "Memory cleared." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
