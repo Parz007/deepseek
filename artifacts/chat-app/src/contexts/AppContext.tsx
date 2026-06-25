@@ -5,8 +5,8 @@ import { setClientIdGetter } from "@workspace/api-client-react";
 export type Theme = "dark" | "light";
 export type Model =
   | "llama-3.3-70b-versatile"
-  | "qwen-qwq-32b"
-  | "mixtral-8x7b-32768";
+  | "qwen/qwen3-32b"
+  | "openai/gpt-oss-20b";
 
 interface AppContextType {
   theme: Theme;
@@ -21,8 +21,8 @@ const AppContext = createContext<AppContextType | null>(null);
 
 const VALID_MODELS: Model[] = [
   "llama-3.3-70b-versatile",
-  "qwen-qwq-32b",
-  "mixtral-8x7b-32768",
+  "qwen/qwen3-32b",
+  "openai/gpt-oss-20b",
 ];
 
 // ── Telegram initData auth ────────────────────────────────────────────────────
