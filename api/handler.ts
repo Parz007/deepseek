@@ -1,4 +1,4 @@
-tyyesimport express from "express";
+import express from "express";
 import crypto from "crypto";
 import cors from "cors";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -1353,7 +1353,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   const messageContent: string = content ?? "What does this image show?";
   const selectedModel: AllowedModel = (ALLOWED_MODELS as readonly string[]).includes(model)
     ? (model as AllowedModel)
-    : "llama-3.3-70b-versatile";
+    "gemini-2.5-flash-lite";
 
   try {
     const db = getDb();
@@ -1375,7 +1375,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     let effectiveModel: AllowedModel = isUserActive
       ? selectedModel
-      : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "llama-3.3-70b-versatile";
+      : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel "gemini-2.5-flash-lite";
 
     // Force Gemini 2.5 Flash for premium users if they picked it; otherwise Flash Lite
 
@@ -1385,7 +1385,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     // Vision: when an image is attached, route to the vision model directly.
     // No pre-pass needed — we pass the image inline in multimodal format,
     // exactly like ChatGPT/Claude do. This avoids the slow two-step approach.
-    const imageContext = ""; // kept for type compat — no longer used
+    // imageContext removed — was unused (TS strict)
     if (imageBase64) {
       effectiveModel = isUserActive ? VISION_MODEL_PRO : VISION_MODEL_FREE;
     }
