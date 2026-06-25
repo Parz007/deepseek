@@ -4,9 +4,9 @@ import { setClientIdGetter } from "@workspace/api-client-react";
 
 export type Theme = "dark" | "light";
 export type Model =
-  | "openrouter/auto"
-  | "openrouter/fusion"
-  | "openrouter/free";
+  | "llama-3.3-70b-versatile"
+  | "qwen-qwq-32b"
+  | "mixtral-8x7b-32768";
 
 interface AppContextType {
   theme: Theme;
@@ -20,9 +20,9 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | null>(null);
 
 const VALID_MODELS: Model[] = [
-  "openrouter/auto",
-  "openrouter/fusion",
-  "openrouter/free",
+  "llama-3.3-70b-versatile",
+  "qwen-qwq-32b",
+  "mixtral-8x7b-32768",
 ];
 
 // ── Telegram initData auth ────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [model, setModelState] = useState<Model>(() => {
     const saved = localStorage.getItem("model") as Model;
-    return VALID_MODELS.includes(saved) ? saved : "openrouter/auto";
+    return VALID_MODELS.includes(saved) ? saved : "llama-3.3-70b-versatile";
   });
 
   // FIX 2: Read clientId synchronously from localStorage so returning users
