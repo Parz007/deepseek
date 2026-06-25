@@ -1329,7 +1329,7 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   const convId = Number(req.params.id);
   if (!Number.isInteger(convId) || convId <= 0) { res.status(400).json({ error: "invalid conversation id" }); return; }
   const { content, model, userPrompt, imageBase64 } = req.body;
-  const clientId = (req.headers["x-client-id"] as string) || "anonymous";
+  const clientId = getClientId(req) ?? "anonymous";
   const reqKey = `${clientId}:${convId}`;
   const reqStart = Date.now();
 
