@@ -61,9 +61,8 @@ const MAX_IMAGES = 1;
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const MODEL_LABELS: Record<Model, string> = {
-  "llama-3.3-70b-versatile": "Llama 3.3",
-  "qwen/qwen3-32b": "Qwen QwQ",
-  "openai/gpt-oss-20b": "GPT OSS 20B",
+  "gemini-2.5-flash-lite": "Agent",
+  "gemini-2.5-flash": "Agent Pro",
 };
 
 // Public-folder whale video (same path used in SplashScreen)
@@ -833,8 +832,8 @@ export default function Chat() {
   const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
 
   useEffect(() => {
-    if (!isPremium && model === "qwen/qwen3-32b") {
-      setModel("llama-3.3-70b-versatile");
+    if (!isPremium && model === "gemini-2.5-flash") {
+      setModel("gemini-2.5-flash-lite");
     }
   }, [isPremium, model, setModel]);
 
@@ -1157,7 +1156,7 @@ export default function Chat() {
                   <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
                     style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.18)" }}
                     onClick={e => e.stopPropagation()}>
-                    {(["llama-3.3-70b-versatile", "qwen/qwen3-32b", "openai/gpt-oss-20b"] satisfies Model[]).map(m => (
+                    {(["gemini-2.5-flash-lite", "gemini-2.5-flash"] satisfies Model[]).map(m => (
                       <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
                         className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
                         style={{
@@ -1167,11 +1166,11 @@ export default function Chat() {
                         onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
                         onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                         <span>{MODEL_LABELS[m]}</span>
-                        {m === "qwen/qwen3-32b" && (
+                        {m === "gemini-2.5-flash" && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
                             style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Auto</span>
                         )}
-                        {m === "llama-3.3-70b-versatile" && (
+                        {m === "gemini-2.5-flash-lite" && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
                             style={{ background: "hsl(var(--muted))", color: "hsl(var(--primary))" }}>Free</span>
                         )}
