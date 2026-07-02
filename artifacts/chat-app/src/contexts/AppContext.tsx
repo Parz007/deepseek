@@ -4,8 +4,9 @@ import { createContext, useContext, useEffect, useState } from "react";
 
   export type Theme = "dark" | "light";
   export type Model =
-    | "gemini-2.5-flash-lite"
-    | "gemini-2.5-flash";
+    | "deepseek"   // paid standard — DeepSeek v4 Flash
+    | "claude"     // paid premium  — Claude Opus 4
+    | "qwen";      // free tier     — Qwen3 30B
 
   interface AppContextType {
     theme: Theme;
@@ -18,10 +19,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 
   const AppContext = createContext<AppContextType | null>(null);
 
-  const VALID_MODELS: Model[] = [
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-  ];
+  const VALID_MODELS: Model[] = ["deepseek", "claude", "qwen"];
 
   // ── Telegram initData auth ────────────────────────────────────────────────────
 
@@ -72,7 +70,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 
     const [model, setModelState] = useState<Model>(() => {
       const saved = localStorage.getItem("model") as Model;
-      return VALID_MODELS.includes(saved) ? saved : "gemini-2.5-flash-lite";
+      return VALID_MODELS.includes(saved) ? saved : "deepseek";
     });
 
     const [clientId, setClientId] = useState<string | null>(() => {
