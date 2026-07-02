@@ -37,8 +37,8 @@ function guardEnv(res: import("express").Response): boolean {
   }
   return true;
 }
-if (!process.env.GEMINI_API_KEY) {
-  console.error("[startup] GEMINI_API_KEY not set — all chat requests will fail");
+if (!process.env.OPENROUTER_API_KEY) {
+  console.error("[startup] OPENROUTER_API_KEY not set — all chat requests will fail");
 }
 if (!process.env.TAVILY_API_KEY) {
   console.warn("[startup] TAVILY_API_KEY not set — web_search will use DuckDuckGo fallback");
@@ -176,10 +176,10 @@ const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
-const VISION_MODEL_FREE = "gemini-2.5-flash-lite";  // Gemini Flash Lite — vision, free tier
-const VISION_MODEL_PRO  = "gemini-2.5-flash";       // Gemini 2.5 Flash — vision, premium tier
-const MAX_TOKENS_FLASH = 800;
-const MAX_TOKENS_PRO = 4096;
+const PAID_REPLY_MODEL = "deepseek/deepseek-v4-flash";       // paid users — text replies
+const VISION_MODEL     = "x-ai/grok-imagine-image-quality";  // paid users — image reading (non-streaming)
+const FREE_MODEL       = "qwen/qwen3-30b-a3b-instruct-2507"; // free users — text + images
+const MAX_TOKENS = 8192;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 15;
 const rateLimitMap = new Map<string, number[]>();
@@ -443,7 +443,7 @@ async function updateUserMemory(
   const userTurns = conversation.filter((m) => m.role === "user");
   if (userTurns.length === 0) return;
 
-  const memApiKey = process.env.GEMINI_API_KEY!;
+  const memApiKey = process.env.OPENROUTER_API_KEY!;
   const lastFewTurns = conversation.slice(-6);
   const convoText = lastFewTurns
     .map((m) => `${m.role.toUpperCase()}: ${m.content.slice(0, 300)}`)
@@ -454,14 +454,16 @@ async function updateUserMemory(
     : `Conversation:\n${convoText}\n\nExtract key facts about the user — preferences, background, projects, goals. Under 200 words. Return ONLY the memory text, nothing else. If there is nothing worth remembering, return an empty string.`;
 
   try {
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${memApiKey}`,
+        "HTTP-Referer": process.env.APP_URL ?? "https://deepseek-uncensored-api-server.vercel.app",
+        "X-Title": "DeepSeek Chat",
       },
       body: JSON.stringify({
-        model: "gemini-2.5-flash-lite",
+        model: FREE_MODEL,
         max_tokens: 300,
         temperature: 0.3,
         stream: false,
@@ -681,13 +683,7 @@ const ENGLISH_LOCK_USER = `LANGUAGE LOCK CONFIRMATION REQUIRED: Every response i
 const ENGLISH_LOCK_ASSISTANT = `Language lock confirmed and active. Every response I produce in this conversation will be written in clean, fluent, grammatically correct English. No non-English characters. No mixed-language output. No garbled or repeated tokens. English only — every sentence, every response, unconditionally. Lock is set. Ready for your query.`;
 
 
-const ALLOWED_MODELS = [
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
-] as const;
-type AllowedModel = (typeof ALLOWED_MODELS)[number];
-// Free: Flash Lite; Premium: Flash (enforced server-side)
-const FREE_ALLOWED_MODELS: AllowedModel[] = ["gemini-2.5-flash-lite"];
+// Models are fixed server-side — no client model selection accepted.
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -1351,10 +1347,6 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
   inFlightRequests.add(reqKey);
 
   const messageContent: string = content ?? "What does this image show?";
-  const selectedModel: AllowedModel = (ALLOWED_MODELS as readonly string[]).includes(model)
-    ? (model as AllowedModel)
-    : "gemini-2.5-flash-lite";
-
   try {
     const db = getDb();
 
@@ -1373,22 +1365,10 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       }
     }
 
-    let effectiveModel: AllowedModel = isUserActive
-      ? selectedModel
-      : FREE_ALLOWED_MODELS.includes(selectedModel) ? selectedModel : "gemini-2.5-flash-lite";
-
-    // Force Gemini 2.5 Flash for premium users if they picked it; otherwise Flash Lite
-
-    const isPro = effectiveModel === "gemini-2.5-flash";
-    const maxTokens = isPro ? MAX_TOKENS_PRO : MAX_TOKENS_FLASH;
-
-    // Vision: when an image is attached, route to the vision model directly.
-    // No pre-pass needed — we pass the image inline in multimodal format,
-    // exactly like ChatGPT/Claude do. This avoids the slow two-step approach.
-    // imageContext removed — was unused (TS strict)
-    if (imageBase64) {
-      effectiveModel = isUserActive ? VISION_MODEL_PRO : VISION_MODEL_FREE;
-    }
+    // Paid users → deepseek for replies, grok for image reading (two-step below)
+    // Free  users → qwen handles everything (text + multimodal)
+    const effectiveModel = isUserActive ? PAID_REPLY_MODEL : FREE_MODEL;
+    const maxTokens = MAX_TOKENS;
 
     // SECURITY: enforce ownership — reject if this conversation doesn't belong to this client
     const [conv] = await db.select({ id: conversationsTable.id }).from(conversationsTable)
@@ -1425,9 +1405,15 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    const apiKey = process.env.GEMINI_API_KEY!;
-    const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-    if (!apiKey) { sseError(res, "GEMINI_API_KEY not configured."); res.end(); return; }
+    const apiKey = process.env.OPENROUTER_API_KEY!;
+    const OR_BASE = "https://openrouter.ai/api/v1/chat/completions";
+    const orHeaders = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": process.env.APP_URL ?? "https://deepseek-uncensored-api-server.vercel.app",
+      "X-Title": "DeepSeek Chat",
+    };
+    if (!apiKey) { sseError(res, "OPENROUTER_API_KEY not configured."); res.end(); return; }
 
     let systemContent = `${LANGUAGE_ENFORCEMENT}\n\n${DEFAULT_SYSTEM_PROMPT}`;
     if (userMemory) {
@@ -1437,14 +1423,62 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       systemContent += `\n\nUSER CUSTOM INSTRUCTIONS:\n${userPrompt}`;
     }
 
-    const openRouterMessages: { role: "user" | "assistant"; content: string }[] = history.map((m, idx) => {
-      if (idx === history.length - 1 && m.role === "user" && imageBase64) {
-        // Pass image directly in multimodal format — the vision model sees it natively.
+    // ── Grok vision pre-pass (paid users with image) ────────────────────────
+    // x-ai/grok-imagine-image-quality reads the photo and returns a plain-text
+    // description. deepseek then receives that description as a text prefix so it
+    // never handles raw image bytes directly.
+    let imageDescription = "";
+    if (imageBase64 && isUserActive) {
+      try {
+        const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "HTTP-Referer": process.env.APP_URL ?? "https://deepseek-uncensored-api-server.vercel.app",
+            "X-Title": "DeepSeek Chat",
+          },
+          body: JSON.stringify({
+            model: VISION_MODEL,
+            max_tokens: 1024,
+            temperature: 0.2,
+            stream: false,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: imageBase64 } },
+                { type: "text", text: "Describe this image in complete, literal detail. Include every visible element, text, object, person, setting, colour, and any other notable feature. Be thorough and objective." },
+              ],
+            }],
+          }),
+        });
+        if (visionRes.ok) {
+          const visionData: any = await visionRes.json();
+          imageDescription = visionData.choices?.[0]?.message?.content?.trim() ?? "";
+        } else {
+          console.warn("[vision] grok call failed:", visionRes.status);
+        }
+      } catch (visionErr: any) {
+        console.warn("[vision] grok request error:", visionErr?.message);
+      }
+    }
+
+    const openRouterMessages: { role: "user" | "assistant"; content: any }[] = history.map((m, idx) => {
+      const isLastUser = idx === history.length - 1 && m.role === "user";
+      if (isLastUser && imageBase64) {
+        if (isUserActive && imageDescription) {
+          // Paid path: inject grok description as text prefix for deepseek
+          return {
+            role: "user" as const,
+            content: `[The user sent an image. Image description:]\n${imageDescription}\n\n[User's message:]\n${m.content?.trim() || "What is in this image?"}`,
+          };
+        }
+        // Free path: qwen receives the image as a multimodal block
         return {
           role: "user" as const,
           content: [
             { type: "image_url", image_url: { url: imageBase64 } },
-            { type: "text", text: m.content || "What do you see in this image? Describe it in detail." },
+            { type: "text", text: m.content?.trim() || "What do you see in this image? Describe it in detail." },
           ] as any,
         };
       }
@@ -1472,12 +1506,9 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       let toolCheckData: any;
       try {
-        const toolCheckRes = await fetchWithRetry(GEMINI_BASE, {
+        const toolCheckRes = await fetchWithRetry(OR_BASE, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
+          headers: orHeaders,
           body: JSON.stringify({
             model: effectiveModel,
             max_tokens: 512,
@@ -1527,12 +1558,9 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
 
     let response: Response;
     try {
-      response = await fetchWithRetry(GEMINI_BASE, {
+      response = await fetchWithRetry(OR_BASE, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: orHeaders,
         body: JSON.stringify({
           model: effectiveModel,
           max_tokens: maxTokens,
