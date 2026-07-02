@@ -53,6 +53,7 @@ const conversationsTable = pgTable("conversations", {
   id: serial("id").primaryKey(),
   title: text("title").notNull(),
   clientId: text("client_id"),
+  shareToken: text("share_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -138,6 +139,7 @@ async function ensureTables() {
       );
       ALTER TABLE messages ADD COLUMN IF NOT EXISTS attached_image TEXT;
       ALTER TABLE messages ADD COLUMN IF NOT EXISTS generated_image_url TEXT;
+      ALTER TABLE conversations ADD COLUMN IF NOT EXISTS share_token TEXT;
       CREATE TABLE IF NOT EXISTS subscriptions (
         id SERIAL PRIMARY KEY,
         client_id TEXT NOT NULL UNIQUE,
@@ -176,7 +178,8 @@ const WALLET_ERC20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const WALLET_TRC20 = "TFRDatJUdNQLYiF7BqQKQi8YFKQ1FBuAGn";
 const WALLET_BEP20 = "0xb1584a0e0ea8b01e57d6caa238ac76512ef87fd7";
 const PLAN_PRICES: Record<string, number> = { monthly: 29, lifetime: 199 };
-const PAID_REPLY_MODEL = "deepseek/deepseek-v4-flash";       // paid users — text replies
+const PAID_REPLY_MODEL = "deepseek/deepseek-v4-flash";       // paid users — standard replies
+const CLAUDE_MODEL     = "anthropic/claude-opus-4";           // paid users — premium (Claude)
 const VISION_MODEL     = "x-ai/grok-imagine-image-quality";  // paid users — image reading (non-streaming)
 const FREE_MODEL       = "qwen/qwen3-30b-a3b-instruct-2507"; // free users — text + images
 const MAX_TOKENS = 8192;
@@ -1364,9 +1367,16 @@ app.post("/api/conversations/:id/messages", async (req, res) => {
       }
     }
 
-    // Paid users → deepseek for replies, grok for image reading (two-step below)
-    // Free  users → qwen handles everything (text + multimodal)
-    const effectiveModel = isUserActive ? PAID_REPLY_MODEL : FREE_MODEL;
+    // Paid users choose "deepseek" (default) or "claude" via model field.
+    // Free  users always get qwen — no choice.
+    let effectiveModel: string;
+    if (isUserActive) {
+      effectiveModel = (typeof model === "string" && model === "claude")
+        ? CLAUDE_MODEL
+        : PAID_REPLY_MODEL;
+    } else {
+      effectiveModel = FREE_MODEL;
+    }
     const maxTokens = MAX_TOKENS;
 
     // SECURITY: enforce ownership — reject if this conversation doesn't belong to this client
@@ -1884,6 +1894,61 @@ app.post("/api/telegram/auth", async (req, res) => {
 
   const token = signClientId(clientId);
   res.json({ clientId, token });
+});
+
+
+// ── Share endpoints ───────────────────────────────────────────────────────────
+
+// POST /api/conversations/:id/share — create or return share token (auth required)
+app.post("/api/conversations/:id/share", async (req, res) => {
+  const clientId = getClientId(req);
+  if (!clientId) { res.status(401).json({ error: "x-client-id header required" }); return; }
+  const convId = parseInt(req.params.id, 10);
+  if (Number.isNaN(convId)) { res.status(400).json({ error: "Invalid conversation id" }); return; }
+  try {
+    const db = getDb();
+    const [conv] = await db.select().from(conversationsTable)
+      .where(and(eq(conversationsTable.id, convId), eq(conversationsTable.clientId, clientId)));
+    if (!conv) { res.status(404).json({ error: "Conversation not found" }); return; }
+    const token: string = conv.shareToken ?? crypto.randomUUID();
+    if (!conv.shareToken) {
+      await db.update(conversationsTable).set({ shareToken: token }).where(eq(conversationsTable.id, convId));
+    }
+    const origin = process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`;
+    res.json({ token, shareUrl: `${origin}/share/${token}` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/share/:token — public read-only, no auth required
+app.get("/api/share/:token", async (req, res) => {
+  const { token } = req.params;
+  if (!token || token.length < 8) { res.status(400).json({ error: "Invalid token" }); return; }
+  try {
+    const db = getDb();
+    const [conv] = await db.select().from(conversationsTable)
+      .where(eq(conversationsTable.shareToken, token));
+    if (!conv) { res.status(404).json({ error: "Shared conversation not found" }); return; }
+    const messages = await db.select().from(messagesTable)
+      .where(eq(messagesTable.conversationId, conv.id))
+      .orderBy(asc(messagesTable.createdAt));
+    res.json({
+      id: conv.id,
+      title: conv.title,
+      createdAt: conv.createdAt,
+      messages: messages.map(m => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        attachedImage: m.attachedImage,
+        generatedImageUrl: m.generatedImageUrl,
+        createdAt: m.createdAt,
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
