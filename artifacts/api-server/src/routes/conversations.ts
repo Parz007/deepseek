@@ -157,19 +157,13 @@ const ENGLISH_LOCK_ASSISTANT = `Language lock confirmed and active. Every respon
 
 
 // ── Models ────────────────────────────────────────────────────────────────────
+// Paid users:  x-ai/grok-imagine-image-quality reads photos,
+//              deepseek/deepseek-v4-flash generates every reply.
+// Free users:  qwen/qwen3-30b-a3b-instruct-2507 handles everything.
 
-const ALLOWED_MODELS = [
-  "openrouter/auto",
-  "openrouter/fusion",
-  "openrouter/free",
-] as const;
-type AllowedModel = (typeof ALLOWED_MODELS)[number];
-
-const FREE_ALLOWED_MODELS: AllowedModel[] = ["openrouter/auto", "openrouter/fusion", "openrouter/free"];
-// Hidden vision model — ONLY used to convert image → text description.
-// Never exposed to the user; never used for the final DeepSeek response.
-// Accepts base64 data URLs ("data:image/...;base64,...") and plain HTTPS URLs.
-// Image is now passed directly to the main model as a multimodal message.
+const PAID_REPLY_MODEL = "deepseek/deepseek-v4-flash";
+const VISION_MODEL     = "x-ai/grok-imagine-image-quality";
+const FREE_MODEL       = "qwen/qwen3-30b-a3b-instruct-2507";
 
 // ── Tool status labels ────────────────────────────────────────────────────────
 
@@ -374,7 +368,7 @@ router.get("/conversations/:id/messages", requireClientId, async (req, res) => {
 // SECURITY FIX: ownership check before appending messages
 router.post("/conversations/:id/messages", requireClientId, async (req, res) => {
   const convId = Number(req.params.id);
-  const { content, model, userPrompt, imageBase64, imageUrl } = req.body;
+  const { content, userPrompt, imageBase64, imageUrl } = req.body;
   // Accept both a base64 data URL ("data:image/jpeg;base64,…") or a plain HTTPS image URL.
   const imageInput: string | undefined = imageBase64 ?? imageUrl ?? undefined;
   const clientId = req.headers["x-client-id"] as string;
@@ -386,9 +380,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
   if (!content && !imageInput) { res.status(400).json({ error: "content or image required" }); return; }
 
   const messageContent: string = content ?? "What does this image show?";
-  const selectedModel: AllowedModel = (ALLOWED_MODELS as readonly string[]).includes(model)
-    ? (model as AllowedModel)
-    : "openrouter/auto";
 
   try {
     let isUserActive = false;
@@ -404,13 +395,13 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       }
     }
 
-    const effectiveModel: AllowedModel = isUserActive
-      ? selectedModel
-      : FREE_ALLOWED_MODELS.includes(selectedModel)
-        ? selectedModel
-        : "openrouter/auto";
+    // ── Model selection ────────────────────────────────────────────────────────
+    // Paid users  → deepseek/deepseek-v4-flash for replies
+    //               x-ai/grok-imagine-image-quality reads photos first (two-step)
+    // Free users  → qwen/qwen3-30b-a3b-instruct-2507 for everything
+    const effectiveModel = isUserActive ? PAID_REPLY_MODEL : FREE_MODEL;
 
-    // Resolve API key early — needed for both image description and DeepSeek calls
+    // Resolve API key early — needed for both image description and main calls
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       res.status(503).json({ error: "Service unavailable" });
@@ -418,7 +409,6 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
     }
 
     // ── Step 1: normalise image URL → base64 data URL ──────────────────────────
-    // The image is passed directly to the main model as a multimodal message.
     // If the input is an HTTPS URL, fetch and convert it to base64 first so the
     // model always receives a self-contained data URL.
     let imageDataUrl = "";
@@ -448,6 +438,46 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
       }
     }
 
+    // ── Step 2 (paid users only): use grok to read the image ──────────────────
+    // x-ai/grok-imagine-image-quality analyses the photo and returns a plain-text
+    // description. That description is then injected into the deepseek conversation
+    // so deepseek never has to handle raw image bytes directly.
+    let imageDescription = "";
+    if (imageDataUrl && isUserActive) {
+      try {
+        const visionRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: buildOrHeaders(apiKey),
+          body: JSON.stringify({
+            model: VISION_MODEL,
+            max_tokens: 1024,
+            temperature: 0.2,
+            stream: false,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "image_url", image_url: { url: imageDataUrl } },
+                  {
+                    type: "text",
+                    text: "Describe this image in complete, literal detail. Include every visible element, text, object, person, setting, colour, and any other notable feature. Be thorough and objective.",
+                  },
+                ],
+              },
+            ],
+          }),
+        });
+        if (visionRes.ok) {
+          const visionData = (await visionRes.json()) as any;
+          imageDescription = visionData.choices?.[0]?.message?.content?.trim() ?? "";
+        } else {
+          req.log.warn({ status: visionRes.status }, "[vision] Grok vision call failed");
+        }
+      } catch (visionErr: any) {
+        req.log.warn({ err: visionErr }, "[vision] Grok vision request error");
+      }
+    }
+
     // SECURITY FIX: verify conversation belongs to this clientId before using it
     const [conv] = await db
       .select({ id: conversationsTable.id })
@@ -474,12 +504,23 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    // ── Step 2: build messages ───────────────────────────────────────────────
-    // If an image was sent, embed it directly as a multimodal content block.
-    // The main model receives both the image and the user's text in one call.
+    // ── Step 3: build messages ───────────────────────────────────────────────
+    // Paid users with image: grok produced a description — inject as text prefix
+    // so deepseek has full image context without receiving raw multimodal bytes.
+    // Paid users without image: plain text history as normal.
+    // Free users with image: pass image directly to qwen as a multimodal block.
     const openRouterMessages = history.map((m, idx) => {
-      if (idx === history.length - 1 && m.role === "user" && imageDataUrl) {
-        // Multimodal message: image + text in a single call to the main model
+      const isLastUser = idx === history.length - 1 && m.role === "user";
+
+      if (isLastUser && imageDataUrl) {
+        if (isUserActive && imageDescription) {
+          // Paid path: deepseek receives the grok description as prefixed text
+          return {
+            role: "user" as const,
+            content: `[The user sent an image. Image description:]\n${imageDescription}\n\n[User's message:]\n${m.content?.trim() || "What is in this image?"}`,
+          };
+        }
+        // Free path: qwen receives the image as a multimodal block
         return {
           role: "user" as const,
           content: [
@@ -488,8 +529,9 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
           ],
         };
       }
-      if (idx === history.length - 1 && m.role === "user" && imageInput && !imageDataUrl) {
-        // Image was provided but URL fetch failed — silently fall back to text only
+
+      if (isLastUser && imageInput && !imageDataUrl) {
+        // Image was provided but URL fetch failed — fall back to text only
         return {
           role: "user" as const,
           content: m.content?.trim()
@@ -497,6 +539,7 @@ router.post("/conversations/:id/messages", requireClientId, async (req, res) => 
             : "I tried to send you an image but it didn't come through. Could you let me know what you'd like help with?",
         };
       }
+
       return { role: m.role as "user" | "assistant", content: m.content };
     });
 
