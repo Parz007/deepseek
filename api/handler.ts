@@ -392,15 +392,14 @@ async function fetchWithRetry(
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
 async function getMessageCount(db: ReturnType<typeof getDb>, clientId: string) {
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
+  const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const result = await db
     .select({ count: sql<number>`cast(count(*) as int)` })
     .from(messagesTable)
     .where(
       and(
         eq(messagesTable.role, "user"),
-        gte(messagesTable.createdAt, todayStart),
+        gte(messagesTable.createdAt, weekStart),
         sql`${messagesTable.conversationId} IN (SELECT id FROM conversations WHERE client_id = ${clientId})`
       )
     );
