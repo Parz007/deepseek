@@ -8,16 +8,16 @@ import PremiumModal from "@/components/PremiumModal";
 
 const MODEL_OPTIONS = [
   {
-    value: "gemini-2.5-flash-lite" as const,
-    label: "Agent",
-    desc: "Fast, smart responses for everyday tasks",
-    badge: "Free",
+    value: "deepseek" as const,
+    label: "DeepSeek",
+    desc: "Fast, unrestricted responses for everyday tasks",
+    badge: "Paid",
   },
   {
-    value: "gemini-2.5-flash" as const,
-    label: "Agent Pro",
-    desc: "Full power — best for complex, in-depth tasks",
-    badge: "Pro",
+    value: "claude" as const,
+    label: "Claude Opus 4",
+    desc: "Anthropic's most capable model — best for complex tasks",
+    badge: "Premium",
   },
 ];
 
@@ -173,6 +173,33 @@ export default function Settings() {
             <InfoRow label="Model provider" value="Google Gemini" />
             <InfoRow label="API" value="deepseek-uncensored-api-server.vercel.app" />
           </div>
+        </Section>
+
+
+        {/* Memory */}
+        <Section title="Memory" icon={<MessageSquare size={16} />}>
+          <SettingRow label="Persistent Memory" desc="Alex remembers facts about you across conversations">
+            <button
+              onClick={async () => {
+                if (!confirm("Clear Alex\'s memory about you? This cannot be undone.")) return;
+                try {
+                  const apiBase = import.meta.env.VITE_API_URL || "";
+                  await fetch(`${apiBase}/api/memory`, {
+                    method: "DELETE",
+                    headers: { "x-client-id": clientId ?? "" },
+                  });
+                  toast({ title: "Memory cleared", description: "Alex will start fresh next conversation." });
+                } catch {
+                  toast({ title: "Failed to clear memory", variant: "destructive" });
+                }
+              }}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-medium transition-all active:scale-95"
+              style={{ background: "hsl(var(--destructive) / 0.1)", color: "hsl(var(--destructive))", border: "1px solid hsl(var(--destructive) / 0.2)" }}
+            >
+              <Trash2 size={13} />
+              Clear
+            </button>
+          </SettingRow>
         </Section>
       </div>
 
