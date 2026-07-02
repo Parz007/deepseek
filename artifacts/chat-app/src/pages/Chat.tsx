@@ -61,8 +61,9 @@ const MAX_IMAGES = 1;
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const MODEL_LABELS: Record<Model, string> = {
-  "gemini-2.5-flash-lite": "Agent",
-  "gemini-2.5-flash": "Agent Pro",
+  "deepseek": "DeepSeek",
+  "claude":   "Claude Opus 4",
+  "qwen":     "Agent",
 };
 
 // Public-folder whale video (same path used in SplashScreen)
@@ -832,8 +833,9 @@ export default function Chat() {
   const openPremium = (byLimit = false) => { setPremiumTriggeredByLimit(byLimit); setShowPremium(true); };
 
   useEffect(() => {
-    if (!isPremium && model === "gemini-2.5-flash") {
-      setModel("gemini-2.5-flash-lite");
+    // If a free user somehow has a paid model stored, reset to qwen
+    if (!isPremium && (model === "deepseek" || model === "claude")) {
+      setModel("qwen");
     }
   }, [isPremium, model, setModel]);
 
@@ -1122,13 +1124,6 @@ export default function Chat() {
           </button>
 
           <div className="flex items-center gap-2.5 flex-1 min-w-0">
-            {/* Small always-moving whale in header */}
-            <div className="w-7 h-7 rounded-lg overflow-hidden flex-shrink-0"
-              style={{ border: "1px solid hsl(var(--border))" }}>
-              <video autoPlay loop muted playsInline className="w-full h-full object-cover">
-                <source src={WHALE_SRC} type="video/webm" />
-              </video>
-            </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
                 {isNew ? "New Chat" : conv?.title || "Chat"}
@@ -1163,7 +1158,7 @@ export default function Chat() {
                   <div className="absolute right-0 top-full mt-1.5 z-50 min-w-[185px] rounded-xl overflow-hidden"
                     style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", boxShadow: "0 8px 24px rgba(0,0,0,0.18)" }}
                     onClick={e => e.stopPropagation()}>
-                    {(["gemini-2.5-flash-lite", "gemini-2.5-flash"] satisfies Model[]).map(m => (
+                    {(["deepseek", "claude"] satisfies Model[]).map(m => (
                       <button key={m} onClick={() => { setModel(m); setShowModelMenu(false); }}
                         className="w-full text-left px-3.5 py-2.5 text-xs font-medium transition-colors flex items-center justify-between gap-3"
                         style={{
@@ -1173,13 +1168,13 @@ export default function Chat() {
                         onMouseEnter={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "hsl(var(--muted))"; }}
                         onMouseLeave={e => { if (model !== m) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                         <span>{MODEL_LABELS[m]}</span>
-                        {m === "gemini-2.5-flash" && (
+                        {m === "claude" && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
-                            style={{ background: "hsl(142 62% 52% / 0.15)", color: "hsl(142 62% 45%)" }}>Auto</span>
+                            style={{ background: "hsl(262 80% 60% / 0.15)", color: "hsl(262 80% 60%)" }}>Premium</span>
                         )}
-                        {m === "gemini-2.5-flash-lite" && (
+                        {m === "deepseek" && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
-                            style={{ background: "hsl(var(--muted))", color: "hsl(var(--primary))" }}>Free</span>
+                            style={{ background: "hsl(var(--muted))", color: "hsl(var(--primary))" }}>Standard</span>
                         )}
                       </button>
                     ))}
@@ -1221,7 +1216,7 @@ export default function Chat() {
                   What's on your mind?
                 </p>
                 <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
-                  {MODEL_LABELS[model]} · Powered by Groq
+                  {MODEL_LABELS[model]}{model === "claude" ? " · Anthropic" : " · OpenRouter"}
                 </p>
               </div>
             </div>
@@ -1454,7 +1449,7 @@ export default function Chat() {
 
           <p className="text-center text-[10px] mt-2" style={{ color: "hsl(var(--muted-foreground) / 0.5)" }}>
             {isLimited
-              ? "Resets daily at midnight UTC"
+              ? "Resets after 7 days"
               : isStreaming
                 ? "Generating… click ■ to stop"
                 : speechRecognition.isRecording
