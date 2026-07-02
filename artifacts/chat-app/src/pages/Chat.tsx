@@ -1122,6 +1122,13 @@ export default function Chat() {
           </button>
 
           <div className="flex items-center gap-2.5 flex-1 min-w-0">
+            {/* Small always-moving whale in header */}
+            <div className="w-7 h-7 rounded-lg overflow-hidden flex-shrink-0"
+              style={{ border: "1px solid hsl(var(--border))" }}>
+              <video autoPlay loop muted playsInline className="w-full h-full object-cover">
+                <source src={WHALE_SRC} type="video/webm" />
+              </video>
+            </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold truncate leading-tight" style={{ color: "hsl(var(--foreground))" }}>
                 {isNew ? "New Chat" : conv?.title || "Chat"}
